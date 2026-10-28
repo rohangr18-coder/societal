@@ -1,0 +1,173 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "User account profile and role information",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "maxLength": 128 },
+        "email": { "type": "string", "maxLength": 256 },
+        "displayName": { "type": "string", "maxLength": 128 },
+        "role": { "type": "string", "enum": ["donor", "ngo", "volunteer", "admin"] },
+        "phoneNumber": { "type": "string", "maxLength": 32 },
+        "organizationId": { "type": "string", "maxLength": 128 },
+        "createdAt": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["uid", "email", "role", "displayName"]
+    },
+    "Donation": {
+      "title": "Donation",
+      "description": "Food donation listing created by a donor",
+      "type": "object",
+      "properties": {
+        "donorId": { "type": "string", "maxLength": 128 },
+        "donorName": { "type": "string", "maxLength": 128 },
+        "foodName": { "type": "string", "maxLength": 128 },
+        "category": { "type": "string", "maxLength": 64 },
+        "description": { "type": "string", "maxLength": 1000 },
+        "quantity": { "type": "number" },
+        "unit": { "type": "string", "maxLength": 32 },
+        "servings": { "type": "number" },
+        "prepTime": { "type": "string", "maxLength": 64 },
+        "pickupDeadline": { "type": "string", "maxLength": 64 },
+        "pickupAddress": { "type": "string", "maxLength": 256 },
+        "latitude": { "type": "number" },
+        "longitude": { "type": "number" },
+        "storageType": { "type": "string", "maxLength": 64 },
+        "packaging": { "type": "string", "maxLength": 64 },
+        "allergens": { "type": "string", "maxLength": 256 },
+        "imageUrl": { "type": "string", "maxLength": 1024 },
+        "status": {
+          "type": "string",
+          "enum": ["available", "requested", "accepted", "scheduled", "picked_up", "delivered", "cancelled", "expired"]
+        },
+        "assignedNgoId": { "type": "string", "maxLength": 128 },
+        "assignedNgoName": { "type": "string", "maxLength": 128 },
+        "assignedVolunteerId": { "type": "string", "maxLength": 128 },
+        "assignedVolunteerName": { "type": "string", "maxLength": 128 },
+        "createdAt": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["donorId", "foodName", "category", "quantity", "unit", "pickupDeadline", "pickupAddress", "status"]
+    },
+    "Organization": {
+      "title": "Organization",
+      "description": "NGO or receiving shelter registration and verification info",
+      "type": "object",
+      "properties": {
+        "ownerUid": { "type": "string", "maxLength": 128 },
+        "name": { "type": "string", "maxLength": 128 },
+        "registrationNumber": { "type": "string", "maxLength": 64 },
+        "type": { "type": "string", "maxLength": 64 },
+        "contactEmail": { "type": "string", "maxLength": 256 },
+        "contactPhone": { "type": "string", "maxLength": 32 },
+        "address": { "type": "string", "maxLength": 256 },
+        "city": { "type": "string", "maxLength": 64 },
+        "capacityDailyMeals": { "type": "number" },
+        "verificationStatus": { "type": "string", "enum": ["pending", "verified", "rejected"] },
+        "verificationNotes": { "type": "string", "maxLength": 512 },
+        "documentUrl": { "type": "string", "maxLength": 1024 },
+        "createdAt": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["ownerUid", "name", "registrationNumber", "verificationStatus"]
+    },
+    "VolunteerProfile": {
+      "title": "VolunteerProfile",
+      "description": "Volunteer service profile, availability and statistics",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string", "maxLength": 128 },
+        "fullName": { "type": "string", "maxLength": 128 },
+        "phone": { "type": "string", "maxLength": 32 },
+        "vehicleType": { "type": "string", "maxLength": 64 },
+        "serviceArea": { "type": "string", "maxLength": 128 },
+        "isAvailable": { "type": "boolean" },
+        "totalPickups": { "type": "number" },
+        "activeAssignmentId": { "type": "string", "maxLength": 128 },
+        "createdAt": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["userId", "fullName", "isAvailable"]
+    },
+    "Notification": {
+      "title": "Notification",
+      "description": "In-app notifications for users regarding donation updates",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string", "maxLength": 128 },
+        "title": { "type": "string", "maxLength": 128 },
+        "message": { "type": "string", "maxLength": 512 },
+        "type": { "type": "string", "maxLength": 64 },
+        "read": { "type": "boolean" },
+        "link": { "type": "string", "maxLength": 256 },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["userId", "title", "message", "read"]
+    },
+    "ImpactRecord": {
+      "title": "ImpactRecord",
+      "description": "Verified delivery record contributing to societal metrics",
+      "type": "object",
+      "properties": {
+        "donationId": { "type": "string", "maxLength": 128 },
+        "foodName": { "type": "string", "maxLength": 128 },
+        "quantityKg": { "type": "number" },
+        "estimatedMeals": { "type": "number" },
+        "donorId": { "type": "string", "maxLength": 128 },
+        "ngoId": { "type": "string", "maxLength": 128 },
+        "volunteerId": { "type": "string", "maxLength": 128 },
+        "deliveredAt": { "type": "string" }
+      },
+      "required": ["donationId", "quantityKg", "donorId", "ngoId"]
+    },
+    "AuditLog": {
+      "title": "AuditLog",
+      "description": "System and administrative action audit trail",
+      "type": "object",
+      "properties": {
+        "action": { "type": "string", "maxLength": 128 },
+        "performedBy": { "type": "string", "maxLength": 128 },
+        "targetId": { "type": "string", "maxLength": 128 },
+        "details": { "type": "string", "maxLength": 1000 },
+        "timestamp": { "type": "string" }
+      },
+      "required": ["action", "performedBy", "timestamp"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/User" },
+      "description": "Collection of user profiles keyed by Firebase Auth UID"
+    },
+    "/donations/{donationId}": {
+      "schema": { "$ref": "#/entities/Donation" },
+      "description": "Food donations collection containing surplus listings"
+    },
+    "/organizations/{orgId}": {
+      "schema": { "$ref": "#/entities/Organization" },
+      "description": "NGO and shelter organization profiles"
+    },
+    "/volunteerProfiles/{profileId}": {
+      "schema": { "$ref": "#/entities/VolunteerProfile" },
+      "description": "Volunteer profiles with vehicle, radius, and availability"
+    },
+    "/notifications/{notificationId}": {
+      "schema": { "$ref": "#/entities/Notification" },
+      "description": "In-app real-time notifications for users"
+    },
+    "/impactRecords/{recordId}": {
+      "schema": { "$ref": "#/entities/ImpactRecord" },
+      "description": "Delivered donation impact metrics"
+    },
+    "/auditLogs/{logId}": {
+      "schema": { "$ref": "#/entities/AuditLog" },
+      "description": "Audit records for administrative and critical state actions"
+    },
+    "/admins/{adminId}": {
+      "schema": { "$ref": "#/entities/User" },
+      "description": "Admin presence documents for secure role validation"
+    }
+  }
+}

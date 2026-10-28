@@ -1,0 +1,163 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Default deny catch-all
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isAdmin() {
+      return isSignedIn() && (
+        (request.auth.token.email == 'rohangr18@gmail.com') ||
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid))
+      );
+    }
+
+    // Health / connection test doc
+    match /test/{docId} {
+      allow read: if true;
+    }
+
+    // Admins collection
+    match /admins/{adminId} {
+      allow read: if isSignedIn();
+      allow write: if isAdmin();
+    }
+
+    // Users collection
+    match /users/{userId} {
+      allow read: if isSignedIn() && (request.auth.uid == userId || isAdmin());
+      allow create: if isSignedIn() && request.auth.uid == userId &&
+        incoming().uid == userId &&
+        incoming().displayName is string && incoming().displayName.size() <= 128 &&
+        incoming().email is string && incoming().email.size() <= 256 &&
+        incoming().role in ['donor', 'ngo', 'volunteer', 'admin'];
+      allow update: if isSignedIn() && (
+        isAdmin() ||
+        (request.auth.uid == userId &&
+         incoming().uid == userId &&
+         (!incoming().diff(existing()).affectedKeys().hasAny(['role'])))
+      );
+      allow delete: if isAdmin();
+    }
+
+    // Organizations collection - public can browse verified partner NGOs
+    match /organizations/{orgId} {
+      allow read: if true;
+      allow create: if isSignedIn() &&
+        isValidId(orgId) &&
+        incoming().ownerUid == request.auth.uid &&
+        incoming().verificationStatus == 'pending' &&
+        incoming().name is string && incoming().name.size() <= 128;
+      allow update: if isSignedIn() && (
+        isAdmin() ||
+        (existing().ownerUid == request.auth.uid &&
+         !incoming().diff(existing()).affectedKeys().hasAny(['verificationStatus', 'ownerUid']))
+      );
+      allow delete: if isAdmin();
+    }
+
+    // Volunteer Profiles collection
+    match /volunteerProfiles/{profileId} {
+      allow read: if true;
+      allow create: if isSignedIn() &&
+        isValidId(profileId) &&
+        incoming().userId == request.auth.uid &&
+        incoming().fullName is string && incoming().fullName.size() <= 128;
+      allow update: if isSignedIn() && (
+        isAdmin() ||
+        (existing().userId == request.auth.uid && incoming().userId == request.auth.uid)
+      );
+      allow delete: if isAdmin() || (isSignedIn() && existing().userId == request.auth.uid);
+    }
+
+    // Donations collection - public can read surplus listings to see food waiting on radar
+    match /donations/{donationId} {
+      allow read: if true;
+      
+      allow create: if isSignedIn() &&
+        isValidId(donationId) &&
+        incoming().donorId == request.auth.uid &&
+        incoming().foodName is string && incoming().foodName.size() <= 128 &&
+        incoming().category is string && incoming().category.size() <= 64 &&
+        incoming().quantity is number &&
+        incoming().unit is string && incoming().unit.size() <= 32 &&
+        incoming().status in ['available', 'requested'];
+
+      allow update: if isSignedIn() && (
+        isAdmin() ||
+        // Donor updating their own donation before pickup
+        (existing().donorId == request.auth.uid &&
+         incoming().donorId == request.auth.uid &&
+         existing().status in ['available', 'requested', 'accepted']) ||
+        // NGO requesting or claiming the donation
+        (existing().status in ['available', 'requested', 'accepted'] &&
+         incoming().diff(existing()).affectedKeys().hasOnly(['status', 'assignedNgoId', 'assignedNgoName', 'updatedAt', 'pickupDeadline', 'claimLock', 'timeline'])) ||
+        // Volunteer updating status to scheduled, picked_up, or delivered
+        (incoming().diff(existing()).affectedKeys().hasOnly(['status', 'assignedVolunteerId', 'assignedVolunteerName', 'updatedAt', 'timeline']))
+      );
+
+      allow delete: if isAdmin() || (isSignedIn() && existing().donorId == request.auth.uid && existing().status == 'available');
+    }
+
+    // In-app Notifications - private to user
+    match /notifications/{notifId} {
+      allow read: if isSignedIn() && (resource.data.userId == request.auth.uid || isAdmin());
+      allow create: if isSignedIn();
+      allow update: if isSignedIn() && (resource.data.userId == request.auth.uid || isAdmin());
+      allow delete: if isSignedIn() && (resource.data.userId == request.auth.uid || isAdmin());
+    }
+
+    // Impact Records - public impact data
+    match /impactRecords/{recordId} {
+      allow read: if true;
+      allow create: if isSignedIn();
+      allow update, delete: if isAdmin();
+    }
+
+    // Audit Logs - admin only
+    match /auditLogs/{logId} {
+      allow read: if isAdmin();
+      allow create: if isSignedIn();
+      allow update, delete: if false; // immutable audit records
+    }
+
+    // Live Tracking Sessions - restricted to active volunteer & participants
+    match /trackingSessions/{donationId} {
+      allow read: if isSignedIn();
+      allow create, update: if isSignedIn() && (
+        incoming().volunteerId == request.auth.uid ||
+        isAdmin()
+      );
+      allow delete: if isSignedIn() && (
+        existing().volunteerId == request.auth.uid ||
+        isAdmin()
+      );
+    }
+
+    // QR & PIN Verification Records - restricted to authenticated participants
+    match /verifications/{donationId} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn();
+      allow update: if isSignedIn();
+      allow delete: if isAdmin();
+    }
+  }
+}

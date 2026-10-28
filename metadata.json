@@ -1,0 +1,6 @@
+{
+  "name": "Food Rescue Network",
+  "description": "Connecting food donors, verified NGOs, shelters, and volunteers to eliminate food waste and fight hunger through real-time rescue logistics and AI-assisted matching.",
+  "requestFramePermissions": ["geolocation"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
