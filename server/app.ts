@@ -4,7 +4,7 @@ import {
   handleMatchInsights,
   handleMultilingualGuide,
   handleMithraChat,
-} from './geminiApi';
+} from './geminiApi.js';
 
 export const app = express();
 

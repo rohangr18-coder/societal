@@ -3,7 +3,7 @@
  * Tests input sanitization, action token parsing, food safety compliance, and deterministic fallback reasoning.
  */
 
-import { parseChatActions, handleMithraChat, handleMithraFallback } from '../server/geminiApi';
+import { parseChatActions, handleMithraChat, handleMithraFallback } from '../server/geminiApi.js';
 
 async function runMithraTests() {
   console.log('🤖 Running Mithra AI Chatbot Verification Suite...\n');

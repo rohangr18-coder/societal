@@ -1,5 +1,5 @@
 import type { Request, Response } from 'express';
-import { handleMatchInsights } from '../../server/geminiApi';
+import { handleMatchInsights } from '../../server/geminiApi.js';
 
 export default async function handler(req: Request, res: Response) {
   res.setHeader('Content-Type', 'application/json');

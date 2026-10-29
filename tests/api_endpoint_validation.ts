@@ -1,4 +1,4 @@
-import { handleCategorySuggestion, handleMatchInsights, handleMultilingualGuide, handleMithraChat } from '../server/geminiApi';
+import { handleCategorySuggestion, handleMatchInsights, handleMultilingualGuide, handleMithraChat } from '../server/geminiApi.js';
 
 async function testBackendEndpoints() {
   console.log('🧪 Testing Gemini Backend Endpoints and Error Resilience...\n');

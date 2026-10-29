@@ -156,29 +156,42 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       return;
     }
 
+    const isBootstrapAdmin = auth.currentUser.email?.toLowerCase() === ADMIN_BOOTSTRAP_EMAIL.toLowerCase();
+    const fallbackProfile: UserProfile = {
+      uid: auth.currentUser.uid,
+      email: auth.currentUser.email || '',
+      displayName: auth.currentUser.displayName || auth.currentUser.email?.split('@')[0] || 'Member',
+      role: isBootstrapAdmin ? 'admin' : 'donor',
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+
     try {
       let profile = await getUserProfile(auth.currentUser.uid);
-      const isBootstrapAdmin = auth.currentUser.email?.toLowerCase() === ADMIN_BOOTSTRAP_EMAIL.toLowerCase();
 
       if (!profile) {
-        // Auto-create initial profile
-        profile = await createOrUpdateUserProfile({
-          uid: auth.currentUser.uid,
-          email: auth.currentUser.email || '',
-          displayName: auth.currentUser.displayName || auth.currentUser.email?.split('@')[0] || 'Member',
-          role: isBootstrapAdmin ? 'admin' : 'donor',
-        });
+        // Auto-create initial profile in Firestore
+        try {
+          profile = await createOrUpdateUserProfile(fallbackProfile);
+        } catch {
+          profile = fallbackProfile;
+        }
       } else if (isBootstrapAdmin && profile.role !== 'admin') {
         // Elevate bootstrap admin
-        profile = await createOrUpdateUserProfile({
-          ...profile,
-          role: 'admin',
-        });
+        try {
+          profile = await createOrUpdateUserProfile({
+            ...profile,
+            role: 'admin',
+          });
+        } catch {
+          profile = { ...profile, role: 'admin' };
+        }
       }
 
-      setUserProfile(profile);
+      setUserProfile(profile || fallbackProfile);
     } catch (err: any) {
-      console.error('Profile fetch error:', err);
+      console.warn('Profile sync fallback:', err);
+      setUserProfile(fallbackProfile);
     }
   };
 

@@ -1,6 +1,6 @@
 import { initializeApp, getApps, getApp } from 'firebase/app';
 import { getAuth } from 'firebase/auth';
-import { getFirestore, doc, getDocFromServer } from 'firebase/firestore';
+import { getFirestore, initializeFirestore, Firestore, doc, getDocFromServer } from 'firebase/firestore';
 import defaultFirebaseConfig from '../../firebase-applet-config.json';
 
 export enum OperationType {
@@ -46,7 +46,11 @@ export function handleFirestoreError(error: unknown, operationType: OperationTyp
     operationType,
     path,
   };
-  console.error('Firestore Error:', JSON.stringify(errInfo));
+  if (errInfo.error.includes('the client is offline')) {
+    console.warn('Firestore temporarily offline or initializing connection for path:', path);
+  } else {
+    console.error('Firestore Error:', JSON.stringify(errInfo));
+  }
   throw new Error(JSON.stringify(errInfo));
 }
 
@@ -123,11 +127,26 @@ if (!startupDiagnostic.isValid) {
 // Initialize Firebase App
 const app = !getApps().length ? initializeApp(activeFirebaseConfig) : getApp();
 
-// CRITICAL: Initialize Firestore with custom databaseId if configured, or default database
-export const db =
-  activeFirestoreDatabaseId && activeFirestoreDatabaseId !== '(default)'
-    ? getFirestore(app, activeFirestoreDatabaseId)
-    : getFirestore(app);
+// CRITICAL: Initialize Firestore with custom databaseId and resilient long-polling
+let firestoreDb: Firestore;
+try {
+  firestoreDb = initializeFirestore(
+    app,
+    {
+      experimentalAutoDetectLongPolling: true,
+    },
+    activeFirestoreDatabaseId && activeFirestoreDatabaseId !== '(default)'
+      ? activeFirestoreDatabaseId
+      : undefined
+  );
+} catch {
+  firestoreDb =
+    activeFirestoreDatabaseId && activeFirestoreDatabaseId !== '(default)'
+      ? getFirestore(app, activeFirestoreDatabaseId)
+      : getFirestore(app);
+}
+
+export const db: Firestore = firestoreDb;
 
 export const auth = getAuth(app);
 

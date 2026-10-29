@@ -44,6 +44,10 @@ export async function getUserProfile(uid: string): Promise<UserProfile | null> {
     }
     return null;
   } catch (error) {
+    if (error instanceof Error && error.message.includes('the client is offline')) {
+      console.warn('Firestore is connecting or temporarily offline for path:', path);
+      return null;
+    }
     handleFirestoreError(error, OperationType.GET, path);
   }
 }

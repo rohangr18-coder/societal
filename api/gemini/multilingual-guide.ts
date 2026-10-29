@@ -1,5 +1,5 @@
 import type { Request, Response } from 'express';
-import { handleMultilingualGuide } from '../../server/geminiApi';
+import { handleMultilingualGuide } from '../../server/geminiApi.js';
 
 export default async function handler(req: Request, res: Response) {
   res.setHeader('Content-Type', 'application/json');

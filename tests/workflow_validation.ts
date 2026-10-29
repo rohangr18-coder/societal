@@ -287,6 +287,8 @@ function runTests() {
   assert(Boolean(spaRewrite), 'SPA fallback rewrite to /index.html is configured');
   assert(spaRewrite?.source.includes('api'), 'SPA fallback excludes /api routes from being rewritten to HTML');
 
+  assert(Boolean(vercelConfig.functions?.['api/**']?.includeFiles), 'vercel.json explicitly bundles server/** files for serverless execution');
+
   console.log(`\n========================================`);
   console.log(`Results: ${passed} Passed, ${failed} Failed`);
   console.log(`========================================\n`);

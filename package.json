@@ -5,11 +5,11 @@
   "type": "module",
   "scripts": {
     "dev": "vite --port=3000 --host=0.0.0.0",
-    "build": "vite build",
+    "build": "vite build && esbuild server/geminiApi.ts server/app.ts --format=esm --platform=node --outdir=server",
     "start": "tsx server.ts",
     "test": "tsx tests/workflow_validation.ts && tsx tests/mithra_ai_validation.ts && tsx tests/api_endpoint_validation.ts",
     "preview": "vite preview",
-    "clean": "rm -rf dist server.js",
+    "clean": "rm -rf dist server/geminiApi.js server/app.js",
     "lint": "tsc --noEmit"
   },
   "dependencies": {

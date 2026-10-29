@@ -1,5 +1,5 @@
 import type { Request, Response } from 'express';
-import { handleMithraChat } from '../../server/geminiApi';
+import { handleMithraChat } from '../../server/geminiApi.js';
 
 export default async function handler(req: Request, res: Response) {
   res.setHeader('Content-Type', 'application/json');
