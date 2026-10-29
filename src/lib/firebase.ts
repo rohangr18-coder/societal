@@ -1,7 +1,7 @@
 import { initializeApp, getApps, getApp } from 'firebase/app';
 import { getAuth } from 'firebase/auth';
 import { getFirestore, doc, getDocFromServer } from 'firebase/firestore';
-import firebaseConfig from '../../firebase-applet-config.json';
+import defaultFirebaseConfig from '../../firebase-applet-config.json';
 
 export enum OperationType {
   CREATE = 'create',
@@ -33,12 +33,12 @@ export function handleFirestoreError(error: unknown, operationType: OperationTyp
   const errInfo: FirestoreErrorInfo = {
     error: error instanceof Error ? error.message : String(error),
     authInfo: {
-      userId: auth.currentUser?.uid,
-      email: auth.currentUser?.email,
-      emailVerified: auth.currentUser?.emailVerified,
-      isAnonymous: auth.currentUser?.isAnonymous,
-      tenantId: auth.currentUser?.tenantId,
-      providerInfo: auth.currentUser?.providerData?.map(provider => ({
+      userId: auth?.currentUser?.uid,
+      email: auth?.currentUser?.email,
+      emailVerified: auth?.currentUser?.emailVerified,
+      isAnonymous: auth?.currentUser?.isAnonymous,
+      tenantId: auth?.currentUser?.tenantId,
+      providerInfo: auth?.currentUser?.providerData?.map(provider => ({
         providerId: provider.providerId,
         email: provider.email,
       })) || [],
@@ -50,11 +50,85 @@ export function handleFirestoreError(error: unknown, operationType: OperationTyp
   throw new Error(JSON.stringify(errInfo));
 }
 
-// Initialize Firebase App
-const app = !getApps().length ? initializeApp(firebaseConfig) : getApp();
+// Support Vercel / Vite environment variables with graceful fallback to firebase-applet-config.json
+export const activeFirebaseConfig = {
+  apiKey: import.meta.env.VITE_FIREBASE_API_KEY || defaultFirebaseConfig.apiKey || '',
+  authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN || defaultFirebaseConfig.authDomain || '',
+  projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID || defaultFirebaseConfig.projectId || '',
+  storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET || defaultFirebaseConfig.storageBucket || '',
+  messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID || defaultFirebaseConfig.messagingSenderId || '',
+  appId: import.meta.env.VITE_FIREBASE_APP_ID || defaultFirebaseConfig.appId || '',
+  measurementId: import.meta.env.VITE_FIREBASE_MEASUREMENT_ID || defaultFirebaseConfig.measurementId || '',
+};
 
-// CRITICAL: Initialize Firestore with firestoreDatabaseId
-export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
+export const activeFirestoreDatabaseId =
+  import.meta.env.VITE_FIREBASE_FIRESTORE_DATABASE_ID ||
+  defaultFirebaseConfig.firestoreDatabaseId ||
+  '';
+
+export const firebaseProjectInfo = {
+  projectId: activeFirebaseConfig.projectId,
+  authDomain: activeFirebaseConfig.authDomain,
+  firestoreDatabaseId: activeFirestoreDatabaseId,
+  isCustomEnvConfigured: Boolean(import.meta.env.VITE_FIREBASE_PROJECT_ID),
+};
+
+export interface FirebaseDiagnostic {
+  isValid: boolean;
+  projectId: string;
+  authDomain: string;
+  firestoreDatabaseId: string;
+  hasApiKey: boolean;
+  hasAppId: boolean;
+  warnings: string[];
+}
+
+export function validateFirebaseConfig(): FirebaseDiagnostic {
+  const warnings: string[] = [];
+  if (!activeFirebaseConfig.apiKey) {
+    warnings.push('Missing Firebase API Key (VITE_FIREBASE_API_KEY).');
+  }
+  if (!activeFirebaseConfig.projectId) {
+    warnings.push('Missing Firebase Project ID (VITE_FIREBASE_PROJECT_ID).');
+  }
+  if (!activeFirebaseConfig.authDomain) {
+    warnings.push('Missing Firebase Auth Domain (VITE_FIREBASE_AUTH_DOMAIN).');
+  }
+  if (!activeFirebaseConfig.appId) {
+    warnings.push('Missing Firebase App ID (VITE_FIREBASE_APP_ID).');
+  }
+  if (!activeFirestoreDatabaseId) {
+    warnings.push('Missing Firestore Database ID (VITE_FIREBASE_FIRESTORE_DATABASE_ID).');
+  }
+
+  return {
+    isValid: warnings.length === 0,
+    projectId: activeFirebaseConfig.projectId,
+    authDomain: activeFirebaseConfig.authDomain,
+    firestoreDatabaseId: activeFirestoreDatabaseId,
+    hasApiKey: Boolean(activeFirebaseConfig.apiKey),
+    hasAppId: Boolean(activeFirebaseConfig.appId),
+    warnings,
+  };
+}
+
+// Perform startup diagnostic validation (never prints secret keys)
+export const startupDiagnostic = validateFirebaseConfig();
+if (!startupDiagnostic.isValid) {
+  console.warn('[Firebase Config Diagnostic] Warnings:', startupDiagnostic.warnings);
+} else {
+  console.info(`[Firebase Config Diagnostic] Connected to Project: "${startupDiagnostic.projectId}", Database: "${startupDiagnostic.firestoreDatabaseId}"`);
+}
+
+// Initialize Firebase App
+const app = !getApps().length ? initializeApp(activeFirebaseConfig) : getApp();
+
+// CRITICAL: Initialize Firestore with custom databaseId if configured, or default database
+export const db =
+  activeFirestoreDatabaseId && activeFirestoreDatabaseId !== '(default)'
+    ? getFirestore(app, activeFirestoreDatabaseId)
+    : getFirestore(app);
+
 export const auth = getAuth(app);
 
 // Connection test

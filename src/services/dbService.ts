@@ -52,7 +52,13 @@ export async function createOrUpdateUserProfile(profile: Partial<UserProfile> & 
   const path = `users/${profile.uid}`;
   try {
     const isBootstrapAdmin = profile.email.toLowerCase() === ADMIN_BOOTSTRAP_EMAIL.toLowerCase();
-    const role = isBootstrapAdmin ? 'admin' : (profile.role || 'donor');
+    let role = profile.role || 'donor';
+    if (!isBootstrapAdmin && role === 'admin') {
+      role = 'donor'; // Security: prevent self-assigning admin role
+    }
+    if (isBootstrapAdmin) {
+      role = 'admin';
+    }
     
     const userDoc: UserProfile = {
       uid: profile.uid,

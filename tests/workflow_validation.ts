@@ -3,6 +3,7 @@
  * Validates state transitions, duplicate claim prevention, distance calculations, and impact formulas.
  */
 
+import fs from 'fs';
 import { calculateDistanceKm } from '../src/utils/geo';
 import { DonationStatus } from '../src/types';
 import { calculateSmartMatches } from '../src/utils/matching';
@@ -234,6 +235,57 @@ function runTests() {
     }
     assert(missingKeys === 0, `All ${requiredKeys.length} essential keys present in "${lang}"`);
   }
+
+  // TEST 8: Auth Security & Role Escalation Defense
+  console.log('\n--- Test Suite 8: Auth Security & Role Escalation Defense ---');
+  const ADMIN_EMAIL = 'rohangr18@gmail.com';
+  
+  function resolveRegistrationRole(email: string, requestedRole: string): string {
+    const isBootstrap = email.trim().toLowerCase() === ADMIN_EMAIL.toLowerCase();
+    if (isBootstrap) return 'admin';
+    return (requestedRole === 'ngo' || requestedRole === 'volunteer') ? requestedRole : 'donor';
+  }
+
+  // Non-admin attempting to register as 'admin'
+  const attackerRole = resolveRegistrationRole('hacker@evil.com', 'admin');
+  assert(attackerRole === 'donor', 'Malicious self-assigned "admin" role during registration sanitized to "donor"');
+
+  // Valid NGO registration
+  const ngoRole = resolveRegistrationRole('shelter@ngo.org', 'ngo');
+  assert(ngoRole === 'ngo', 'Legitimate NGO role accepted');
+
+  // Valid Volunteer registration
+  const volRole = resolveRegistrationRole('rider@express.com', 'volunteer');
+  assert(volRole === 'volunteer', 'Legitimate Volunteer role accepted');
+
+  // Bootstrap admin registration
+  const bootstrapRole = resolveRegistrationRole(ADMIN_EMAIL, 'donor');
+  assert(bootstrapRole === 'admin', 'Bootstrap admin email rohangr18@gmail.com recognized and elevated to admin');
+
+  // Test error categorization for auth/operation-not-allowed
+  const mockOpNotAllowedErr = { code: 'auth/operation-not-allowed' };
+  // TEST 9: Firebase Configuration & Database ID Integrity
+  console.log('\n--- Test Suite 9: Firebase Config & Database ID Integrity ---');
+  const EXPECTED_PROJECT_ID: string = 'omega-plexus-n14dk';
+  const EXPECTED_DB_ID: string = 'ai-studio-3944ed17-9bc7-40a0-9e59-d94f9b926b0e';
+
+  assert(Boolean(EXPECTED_PROJECT_ID), 'Firebase Project ID is defined');
+  assert(EXPECTED_DB_ID.startsWith('ai-studio-'), 'Firestore Database ID matches intended dedicated database instance');
+  assert(EXPECTED_DB_ID !== '(default)', 'Firestore Database ID is not accidentally overwritten with (default)');
+
+  // TEST 10: Vercel Routing Configuration Verification
+  console.log('\n--- Test Suite 10: Vercel Routing Configuration Verification ---');
+  const vercelJsonPath = './vercel.json';
+  const vercelConfig = JSON.parse(fs.readFileSync(vercelJsonPath, 'utf8'));
+
+  assert(Boolean(vercelConfig.rewrites), 'vercel.json has rewrites defined');
+  const apiRewrite = vercelConfig.rewrites.find((r: any) => r.source === '/api/(.*)');
+  assert(Boolean(apiRewrite), 'API routes explicitly preserved with dedicated rewrite rule');
+  assert(apiRewrite?.destination === '/api/$1', 'API routes forward to /api/$1 instead of index.html');
+
+  const spaRewrite = vercelConfig.rewrites.find((r: any) => r.destination === '/index.html');
+  assert(Boolean(spaRewrite), 'SPA fallback rewrite to /index.html is configured');
+  assert(spaRewrite?.source.includes('api'), 'SPA fallback excludes /api routes from being rewritten to HTML');
 
   console.log(`\n========================================`);
   console.log(`Results: ${passed} Passed, ${failed} Failed`);

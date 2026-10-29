@@ -28,6 +28,7 @@ export const AuthView: React.FC<AuthViewProps> = ({ onSuccess }) => {
     resetPassword,
     error,
     authProviderError,
+    firebaseProjectId,
     clearError,
   } = useAuth();
 
@@ -38,6 +39,10 @@ export const AuthView: React.FC<AuthViewProps> = ({ onSuccess }) => {
   const [role, setRole] = useState<UserRole>('donor');
   const [loading, setLoading] = useState(false);
   const [resetSent, setResetSent] = useState(false);
+
+  const currentHost = typeof window !== 'undefined' ? window.location.hostname : 'your Vercel domain';
+  const consoleProvidersUrl = `https://console.firebase.google.com/project/${firebaseProjectId}/authentication/providers`;
+  const consoleSettingsUrl = `https://console.firebase.google.com/project/${firebaseProjectId}/authentication/settings`;
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -54,7 +59,7 @@ export const AuthView: React.FC<AuthViewProps> = ({ onSuccess }) => {
         setResetSent(true);
       }
     } catch (err) {
-      // Handled in AuthContext
+      // Error message is set in AuthContext
     } finally {
       setLoading(false);
     }
@@ -66,7 +71,7 @@ export const AuthView: React.FC<AuthViewProps> = ({ onSuccess }) => {
       await signInWithGoogle();
       onSuccess();
     } catch (err) {
-      // Handled in AuthContext
+      // Error message is set in AuthContext
     } finally {
       setLoading(false);
     }
@@ -92,25 +97,101 @@ export const AuthView: React.FC<AuthViewProps> = ({ onSuccess }) => {
           </p>
         </div>
 
-        {/* Actionable Error Banner if Provider Disabled */}
+        {/* Actionable Error Banner if Provider Disabled or Domain Unauthorized */}
         {authProviderError && (
-          <div className="p-4 bg-amber-50 border border-amber-300 rounded-2xl text-xs space-y-2 text-amber-900">
-            <div className="font-bold flex items-center gap-1.5">
-              <AlertCircle className="w-4 h-4 text-amber-600 shrink-0" />
-              Firebase Setup Action Needed:
+          <div className="p-4 bg-amber-50/90 border border-amber-300 rounded-2xl text-xs space-y-3 text-amber-950">
+            <div className="flex items-start justify-between gap-2">
+              <div className="font-bold flex items-center gap-1.5 text-amber-900">
+                <AlertCircle className="w-4 h-4 text-amber-600 shrink-0" />
+                Firebase Setup Action Needed
+              </div>
+              <button
+                type="button"
+                onClick={clearError}
+                className="text-[10px] text-amber-700 hover:text-amber-950 underline font-semibold cursor-pointer"
+              >
+                Dismiss
+              </button>
             </div>
-            <p className="leading-relaxed">
-              {authProviderError === 'EMAIL_PASSWORD_DISABLED' && (
-                <>
-                  Email/Password authentication provider is currently disabled in your Firebase project. To enable it, visit Firebase Console &gt; <strong>Authentication</strong> &gt; <strong>Sign-in method</strong> &gt; enable <strong>Email/Password</strong>.
-                </>
-              )}
-              {authProviderError === 'GOOGLE_AUTH_DISABLED' && (
-                <>
-                  Google authentication provider is not enabled in your Firebase project. Enable <strong>Google</strong> under <strong>Authentication &gt; Sign-in method</strong>.
-                </>
-              )}
-            </p>
+
+            {authProviderError === 'EMAIL_PASSWORD_DISABLED' && (
+              <div className="space-y-2 leading-relaxed">
+                <p>
+                  <strong>Email/Password sign-in</strong> is currently disabled in your Firebase project (
+                  <code className="bg-amber-100/80 px-1 py-0.5 rounded text-[11px] font-mono text-amber-900">{firebaseProjectId}</code>
+                  ).
+                </p>
+                <div className="bg-white/80 p-2.5 rounded-xl border border-amber-200/70 space-y-1 text-[11px]">
+                  <p className="font-semibold text-amber-900">How to enable in 3 steps:</p>
+                  <ol className="list-decimal pl-4 space-y-0.5 text-stone-700">
+                    <li>Open Firebase Console &gt; <strong>Authentication</strong> &gt; <strong>Sign-in method</strong>.</li>
+                    <li>Click on <strong>Email/Password</strong> under "Sign-in providers".</li>
+                    <li>Toggle the <strong>Enable</strong> switch to ON and click <strong>Save</strong>.</li>
+                  </ol>
+                </div>
+                <a
+                  href={consoleProvidersUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-1.5 text-emerald-800 font-bold hover:underline text-[11px]"
+                >
+                  Open Firebase Authentication Console
+                  <ExternalLink className="w-3.5 h-3.5" />
+                </a>
+              </div>
+            )}
+
+            {authProviderError === 'GOOGLE_AUTH_DISABLED' && (
+              <div className="space-y-2 leading-relaxed">
+                <p>
+                  <strong>Google Sign-in</strong> is not yet enabled in your Firebase project (
+                  <code className="bg-amber-100/80 px-1 py-0.5 rounded text-[11px] font-mono text-amber-900">{firebaseProjectId}</code>
+                  ).
+                </p>
+                <div className="bg-white/80 p-2.5 rounded-xl border border-amber-200/70 space-y-1 text-[11px]">
+                  <p className="font-semibold text-amber-900">How to enable:</p>
+                  <p className="text-stone-700">
+                    In Firebase Console &gt; <strong>Authentication</strong> &gt; <strong>Sign-in method</strong>, click <strong>Add new provider</strong> &gt; <strong>Google</strong> &gt; toggle <strong>Enable</strong>, select your support email, and click <strong>Save</strong>.
+                  </p>
+                </div>
+                <a
+                  href={consoleProvidersUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-1.5 text-emerald-800 font-bold hover:underline text-[11px]"
+                >
+                  Open Firebase Providers Console
+                  <ExternalLink className="w-3.5 h-3.5" />
+                </a>
+              </div>
+            )}
+
+            {authProviderError === 'UNAUTHORIZED_DOMAIN' && (
+              <div className="space-y-2 leading-relaxed">
+                <p>
+                  Your current deployment domain (
+                  <code className="bg-amber-100/80 px-1 py-0.5 rounded text-[11px] font-mono text-amber-900">{currentHost}</code>
+                  ) is not authorized in Firebase.
+                </p>
+                <div className="bg-white/80 p-2.5 rounded-xl border border-amber-200/70 space-y-1 text-[11px]">
+                  <p className="font-semibold text-amber-900">How to authorize Vercel domain:</p>
+                  <ol className="list-decimal pl-4 space-y-0.5 text-stone-700">
+                    <li>Go to Firebase Console &gt; <strong>Authentication</strong> &gt; <strong>Settings</strong>.</li>
+                    <li>Select the <strong>Authorized domains</strong> tab.</li>
+                    <li>Click <strong>Add domain</strong> and enter <code className="font-mono text-stone-900">{currentHost}</code>.</li>
+                  </ol>
+                </div>
+                <a
+                  href={consoleSettingsUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-1.5 text-emerald-800 font-bold hover:underline text-[11px]"
+                >
+                  Open Authorized Domains Settings
+                  <ExternalLink className="w-3.5 h-3.5" />
+                </a>
+              </div>
+            )}
           </div>
         )}
 
