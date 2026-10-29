@@ -13,6 +13,7 @@ import { AdminDashboardView } from './components/AdminDashboardView';
 import { AuthView } from './components/AuthView';
 import { AboutView } from './components/AboutView';
 import { ProfileSettingsView } from './components/ProfileSettingsView';
+import { VolunteerView } from './components/VolunteerView';
 import { CreateDonationModal } from './components/CreateDonationModal';
 import { DonationDetailModal } from './components/DonationDetailModal';
 import { MithraChatbot } from './components/MithraChatbot';
@@ -25,6 +26,8 @@ function AppContent() {
   const { currentUser, userProfile, loading: authLoading } = useAuth();
 
   const [currentTab, setCurrentTab] = useState<string>('home');
+  const [authInitialRole, setAuthInitialRole] = useState<'donor' | 'volunteer' | null>(null);
+  const [pendingOpenCreate, setPendingOpenCreate] = useState(false);
   const [donations, setDonations] = useState<Donation[]>([]);
   const [loadingDonations, setLoadingDonations] = useState(true);
   const [createModalOpen, setCreateModalOpen] = useState(false);
@@ -155,6 +158,8 @@ function AppContent() {
 
   const handleOpenCreateDonation = () => {
     if (!currentUser) {
+      setAuthInitialRole('donor');
+      setPendingOpenCreate(true);
       setCurrentTab('auth');
       return;
     }
@@ -167,6 +172,9 @@ function AppContent() {
         currentTab={currentTab}
         setCurrentTab={setCurrentTab}
         onOpenCreateDonation={handleOpenCreateDonation}
+        onSelectRoleBeforeLogin={(role) => {
+          setAuthInitialRole(role);
+        }}
       />
 
       {/* Main View Router */}
@@ -193,62 +201,84 @@ function AppContent() {
           </div>
         )}
 
-        {currentTab === 'home' && (
-          <LandingView
-            donations={donations}
-            onNavigate={setCurrentTab}
-            onOpenCreate={handleOpenCreateDonation}
-            onSelectDonation={(d) => setSelectedDonation(d)}
-          />
-        )}
-
-        {currentTab === 'browse' && (
-          <BrowseDonationsView
-            donations={donations}
-            onSelectDonation={(d) => setSelectedDonation(d)}
-            onOpenCreate={handleOpenCreateDonation}
-          />
-        )}
-
-        {currentTab === 'map' && (
-          <RescueMapView
-            donations={donations}
-            onSelectDonation={(d) => setSelectedDonation(d)}
-            onOpenCreate={handleOpenCreateDonation}
-          />
-        )}
-
-        {currentTab === 'dashboard' && (
-          <DashboardView
-            donations={donations}
-            onSelectDonation={(d) => setSelectedDonation(d)}
-            onOpenCreate={handleOpenCreateDonation}
-            onNavigate={setCurrentTab}
-          />
-        )}
-
-        {currentTab === 'organizations' && <OrganizationsView />}
-
-        {currentTab === 'impact' && <ImpactAnalyticsView donations={donations} />}
-
-        {currentTab === 'admin' && (
-          <AdminDashboardView
-            donations={donations}
-            onSelectDonation={(d) => setSelectedDonation(d)}
-          />
-        )}
-
-        {currentTab === 'auth' && (
+        {/* If user is on 'auth' tab, OR unauthenticated on 'home' (Welcome Page), OR authenticated without a role */}
+        {(currentTab === 'auth' ||
+          (!currentUser && !authLoading && currentTab === 'home') ||
+          (currentUser && !authLoading && !userProfile?.role)) ? (
           <AuthView
-            onSuccess={() => {
-              setCurrentTab('dashboard');
+            initialRole={authInitialRole}
+            onSuccess={(targetDashboard) => {
+              const dest =
+                targetDashboard ||
+                (userProfile?.role === 'volunteer' ? 'volunteer' : 'dashboard');
+              setCurrentTab(dest);
+              if (pendingOpenCreate && (dest === 'dashboard' || dest === 'home')) {
+                setCreateModalOpen(true);
+                setPendingOpenCreate(false);
+              }
             }}
+            onNavigateTab={setCurrentTab}
           />
+        ) : (
+          <>
+            {currentTab === 'home' && (
+              <LandingView
+                donations={donations}
+                onNavigate={setCurrentTab}
+                onOpenCreate={handleOpenCreateDonation}
+                onSelectDonation={(d) => setSelectedDonation(d)}
+              />
+            )}
+
+            {currentTab === 'browse' && (
+              <BrowseDonationsView
+                donations={donations}
+                onSelectDonation={(d) => setSelectedDonation(d)}
+                onOpenCreate={handleOpenCreateDonation}
+              />
+            )}
+
+            {currentTab === 'map' && (
+              <RescueMapView
+                donations={donations}
+                onSelectDonation={(d) => setSelectedDonation(d)}
+                onOpenCreate={handleOpenCreateDonation}
+              />
+            )}
+
+            {currentTab === 'dashboard' && (
+              <DashboardView
+                donations={donations}
+                onSelectDonation={(d) => setSelectedDonation(d)}
+                onOpenCreate={handleOpenCreateDonation}
+                onNavigate={setCurrentTab}
+              />
+            )}
+
+            {currentTab === 'organizations' && <OrganizationsView />}
+
+            {currentTab === 'impact' && <ImpactAnalyticsView donations={donations} />}
+
+            {currentTab === 'volunteer' && (
+              <VolunteerView
+                donations={donations}
+                onSelectDonation={(d) => setSelectedDonation(d)}
+                onNavigateTab={setCurrentTab}
+              />
+            )}
+
+            {currentTab === 'admin' && (
+              <AdminDashboardView
+                donations={donations}
+                onSelectDonation={(d) => setSelectedDonation(d)}
+              />
+            )}
+
+            {currentTab === 'about' && <AboutView />}
+
+            {currentTab === 'profile' && <ProfileSettingsView />}
+          </>
         )}
-
-        {currentTab === 'about' && <AboutView />}
-
-        {currentTab === 'profile' && <ProfileSettingsView />}
       </main>
 
       {/* Modals */}

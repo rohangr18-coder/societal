@@ -6,7 +6,9 @@ export type DonationStatus =
   | 'accepted'
   | 'scheduled'
   | 'picked_up'
+  | 'in_transit'
   | 'delivered'
+  | 'completed'
   | 'cancelled'
   | 'expired';
 
@@ -22,8 +24,9 @@ export interface UserProfile {
   uid: string;
   email: string;
   displayName: string;
-  role: UserRole;
+  role?: UserRole;
   phoneNumber?: string;
+  phone?: string;
   organizationId?: string;
   preferredLanguage?: 'en' | 'kn' | 'hi' | 'ta';
   createdAt: string;
@@ -42,6 +45,13 @@ export interface Donation {
   servings?: number;
   prepTime?: string;
   pickupDeadline: string;
+  // Accurate Pickup Scheduling & Time Zone
+  pickupDate?: string; // YYYY-MM-DD
+  availableFrom?: string; // HH:mm local time
+  availableUntil?: string; // HH:mm local time
+  collectionDeadline?: string; // ISO timestamp or YYYY-MM-DDTHH:mm
+  preferredPickupTime?: string; // HH:mm optional
+  timeZone?: string; // Default: 'Asia/Kolkata'
   pickupAddress: string;
   latitude: number;
   longitude: number;
@@ -54,6 +64,14 @@ export interface Donation {
   assignedNgoName?: string;
   assignedVolunteerId?: string;
   assignedVolunteerName?: string;
+  assignedVolunteerPhone?: string;
+  dropoffAddress?: string;
+  dropoffLatitude?: number;
+  dropoffLongitude?: number;
+  acceptedAt?: string;
+  pickedUpAt?: string;
+  deliveredAt?: string;
+  completedAt?: string;
   claimLock?: string;
   timeline?: TimelineEntry[];
   createdAt: string;
@@ -88,6 +106,12 @@ export interface VolunteerProfile {
   isAvailable: boolean;
   totalPickups: number;
   activeAssignmentId?: string;
+  latitude?: number;
+  longitude?: number;
+  address?: string;
+  notificationRadiusKm?: number; // Configurable radius in km, default 10 km
+  optInNotifications?: boolean;
+  emergencyContact?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -95,11 +119,17 @@ export interface VolunteerProfile {
 export interface InAppNotification {
   id: string;
   userId: string;
+  recipientUserId?: string; // Dedicated recipient UID for strict multi-user privacy
   title: string;
   message: string;
-  type: 'request' | 'status_change' | 'assignment' | 'alert' | 'system';
+  type: 'request' | 'status_change' | 'assignment' | 'alert' | 'system' | 'collection_request';
   read: boolean;
   link?: string;
+  donationId?: string;
+  distanceKm?: number;
+  deadline?: string;
+  deliveryStatus?: 'sent' | 'delivered' | 'read';
+  readAt?: string;
   createdAt: string;
 }
 

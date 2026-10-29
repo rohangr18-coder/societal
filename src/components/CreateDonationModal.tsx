@@ -11,6 +11,8 @@ import {
   CheckCircle2,
   Loader2,
   Navigation,
+  Calendar,
+  Globe,
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { createDonation } from '../services/dbService';
@@ -50,6 +52,8 @@ const PACKAGING_OPTIONS = [
 export const CreateDonationModal: React.FC<CreateDonationModalProps> = ({ isOpen, onClose, onSuccess }) => {
   const { currentUser, userProfile } = useAuth();
 
+  const todayStr = new Date().toISOString().split('T')[0];
+
   const [foodName, setFoodName] = useState('');
   const [category, setCategory] = useState(CATEGORIES[0]);
   const [description, setDescription] = useState('');
@@ -57,7 +61,16 @@ export const CreateDonationModal: React.FC<CreateDonationModalProps> = ({ isOpen
   const [unit, setUnit] = useState('servings');
   const [servings, setServings] = useState<number>(10);
   const [prepTime, setPrepTime] = useState('');
+  
+  // Dedicated Pickup Schedule states
+  const [pickupDate, setPickupDate] = useState(todayStr);
+  const [availableFrom, setAvailableFrom] = useState('11:00');
+  const [availableUntil, setAvailableUntil] = useState('16:00');
+  const [collectionDeadline, setCollectionDeadline] = useState('15:00');
+  const [preferredPickupTime, setPreferredPickupTime] = useState('');
+  const [timeZone] = useState('Asia/Kolkata');
   const [pickupDeadline, setPickupDeadline] = useState('');
+
   const [pickupAddress, setPickupAddress] = useState('');
   const [latitude, setLatitude] = useState(28.6139);
   const [longitude, setLongitude] = useState(77.2090);
@@ -178,15 +191,65 @@ export const CreateDonationModal: React.FC<CreateDonationModalProps> = ({ isOpen
       return;
     }
 
-    if (!pickupDeadline) {
-      setError('Please specify a pickup deadline.');
+    // --- Strict Pickup Schedule Validation ---
+    if (!pickupDate) {
+      setError('Please select an available pickup date.');
       return;
+    }
+
+    if (pickupDate < todayStr) {
+      setError('Pickup date cannot be in the past. Please select today or a future date.');
+      return;
+    }
+
+    if (!availableFrom) {
+      setError('Please specify Available From start time.');
+      return;
+    }
+
+    if (!availableUntil) {
+      setError('Please specify Available Until end time.');
+      return;
+    }
+
+    if (availableUntil <= availableFrom) {
+      setError('Available Until time must be later than Available From time.');
+      return;
+    }
+
+    // If scheduled for today, verify start time hasn't already passed
+    if (pickupDate === todayStr) {
+      const now = new Date();
+      const curHours = String(now.getHours()).padStart(2, '0');
+      const curMins = String(now.getMinutes()).padStart(2, '0');
+      const curTime = `${curHours}:${curMins}`;
+      if (availableFrom < curTime) {
+        setError(`Start time (${availableFrom}) cannot be in the past for today's pickup (current time: ${curTime}).`);
+        return;
+      }
+    }
+
+    const effectiveDeadline = collectionDeadline || availableUntil;
+    if (effectiveDeadline < availableFrom || effectiveDeadline > availableUntil) {
+      setError('Collection deadline must be within the available pickup window (between Available From and Available Until).');
+      return;
+    }
+
+    if (preferredPickupTime) {
+      if (preferredPickupTime < availableFrom || preferredPickupTime > availableUntil) {
+        setError('Preferred pickup time must fall within the available pickup window.');
+        return;
+      }
     }
 
     if (!pickupAddress.trim()) {
       setError('Pickup address is required.');
       return;
     }
+
+    // Normalized ISO collection deadline
+    const normalizedDeadline = `${pickupDate}T${effectiveDeadline}:00`;
+    const formattedDeadline = pickupDeadline.trim() || `${pickupDate} before ${effectiveDeadline} (${timeZone})`;
 
     setSubmitting(true);
     try {
@@ -200,7 +263,13 @@ export const CreateDonationModal: React.FC<CreateDonationModalProps> = ({ isOpen
         unit,
         servings: Number(servings) || Number(quantity),
         prepTime,
-        pickupDeadline,
+        pickupDeadline: formattedDeadline,
+        pickupDate,
+        availableFrom,
+        availableUntil,
+        collectionDeadline: normalizedDeadline,
+        preferredPickupTime: preferredPickupTime || undefined,
+        timeZone,
         pickupAddress: pickupAddress.trim(),
         latitude,
         longitude,
@@ -371,34 +440,110 @@ export const CreateDonationModal: React.FC<CreateDonationModalProps> = ({ isOpen
             />
           </div>
 
-          {/* Preparation & Deadline Timestamps */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            <div>
-              <label className="font-semibold text-stone-800 block mb-1 flex items-center gap-1.5">
-                <Clock className="w-4 h-4 text-emerald-600" />
-                Preparation / Available Time
-              </label>
-              <input
-                type="text"
-                placeholder="e.g. Today at 2:00 PM"
-                value={prepTime}
-                onChange={(e) => setPrepTime(e.target.value)}
-                className="w-full px-3 py-2 rounded-xl border border-stone-200 focus:border-emerald-500 outline-hidden"
-              />
+          {/* DEDICATED SECTION: Accurate Pickup Schedule Selector */}
+          <div className="bg-emerald-50/50 border border-emerald-200/80 rounded-2xl p-4 sm:p-5 space-y-4">
+            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-emerald-100 pb-3">
+              <div className="flex items-center gap-2">
+                <Calendar className="w-5 h-5 text-emerald-700" />
+                <div>
+                  <h3 className="font-bold text-emerald-950 text-sm">Pickup Schedule</h3>
+                  <p className="text-[11px] text-emerald-700">Specify precise window and collection deadline for volunteers</p>
+                </div>
+              </div>
+              <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold bg-emerald-100/80 text-emerald-900 border border-emerald-300">
+                <Globe className="w-3.5 h-3.5 text-emerald-700" />
+                Time Zone: {timeZone} (IST)
+              </span>
             </div>
 
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              {/* Pickup Date */}
+              <div>
+                <label className="text-xs font-bold text-stone-700 block mb-1">
+                  Available Pickup Date <span className="text-red-500">*</span>
+                </label>
+                <input
+                  type="date"
+                  min={todayStr}
+                  required
+                  value={pickupDate}
+                  onChange={(e) => setPickupDate(e.target.value)}
+                  className="w-full px-3 py-2 rounded-xl border border-stone-200 bg-white focus:border-emerald-500 outline-hidden text-xs font-semibold"
+                />
+              </div>
+
+              {/* Available From */}
+              <div>
+                <label className="text-xs font-bold text-stone-700 block mb-1">
+                  Available From (Start Time) <span className="text-red-500">*</span>
+                </label>
+                <input
+                  type="time"
+                  required
+                  value={availableFrom}
+                  onChange={(e) => setAvailableFrom(e.target.value)}
+                  className="w-full px-3 py-2 rounded-xl border border-stone-200 bg-white focus:border-emerald-500 outline-hidden text-xs font-semibold"
+                />
+              </div>
+
+              {/* Available Until */}
+              <div>
+                <label className="text-xs font-bold text-stone-700 block mb-1">
+                  Available Until (End Time) <span className="text-red-500">*</span>
+                </label>
+                <input
+                  type="time"
+                  required
+                  value={availableUntil}
+                  onChange={(e) => setAvailableUntil(e.target.value)}
+                  className="w-full px-3 py-2 rounded-xl border border-stone-200 bg-white focus:border-emerald-500 outline-hidden text-xs font-semibold"
+                />
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
+              {/* Collection Deadline */}
+              <div>
+                <label className="text-xs font-bold text-stone-700 block mb-1 flex items-center justify-between">
+                  <span>Collection Deadline <span className="text-red-500">*</span></span>
+                  <span className="text-[10px] text-amber-700 font-medium">Latest pickup time</span>
+                </label>
+                <input
+                  type="time"
+                  required
+                  value={collectionDeadline}
+                  onChange={(e) => setCollectionDeadline(e.target.value)}
+                  className="w-full px-3 py-2 rounded-xl border border-stone-200 bg-white focus:border-emerald-500 outline-hidden text-xs font-semibold"
+                />
+              </div>
+
+              {/* Preferred Pickup Time (Optional) */}
+              <div>
+                <label className="text-xs font-bold text-stone-700 block mb-1 flex items-center justify-between">
+                  <span>Preferred Pickup Time</span>
+                  <span className="text-[10px] text-stone-400">Optional</span>
+                </label>
+                <input
+                  type="time"
+                  value={preferredPickupTime}
+                  onChange={(e) => setPreferredPickupTime(e.target.value)}
+                  placeholder="Optional"
+                  className="w-full px-3 py-2 rounded-xl border border-stone-200 bg-white focus:border-emerald-500 outline-hidden text-xs"
+                />
+              </div>
+            </div>
+
+            {/* Preparation / Cooking Time (Optional note) */}
             <div>
-              <label className="font-semibold text-stone-800 block mb-1 flex items-center gap-1.5">
-                <Clock className="w-4 h-4 text-orange-600" />
-                Pickup Deadline <span className="text-red-500">*</span>
+              <label className="text-xs font-semibold text-stone-600 block mb-1">
+                Preparation / Cooking Notes (e.g., Prepared at 1:30 PM, ready now)
               </label>
               <input
                 type="text"
-                required
-                placeholder="e.g. Today before 6:30 PM"
-                value={pickupDeadline}
-                onChange={(e) => setPickupDeadline(e.target.value)}
-                className="w-full px-3 py-2 rounded-xl border border-stone-200 focus:border-emerald-500 outline-hidden font-medium"
+                placeholder="e.g. Prepared at 1:30 PM, best collected fresh"
+                value={prepTime}
+                onChange={(e) => setPrepTime(e.target.value)}
+                className="w-full px-3 py-1.5 rounded-xl border border-stone-200 bg-white focus:border-emerald-500 outline-hidden text-xs"
               />
             </div>
           </div>

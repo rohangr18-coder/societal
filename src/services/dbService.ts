@@ -18,6 +18,7 @@ import {
 import { db, auth, handleFirestoreError, OperationType } from '../lib/firebase';
 import {
   UserProfile,
+  UserRole,
   Donation,
   DonationStatus,
   Organization,
@@ -29,6 +30,7 @@ import {
   VerificationRecord,
   LiveTrackingSession,
 } from '../types';
+import { calculateDistanceKm } from '../utils/geo';
 
 const ADMIN_BOOTSTRAP_EMAIL = 'rohangr18@gmail.com';
 
@@ -56,26 +58,53 @@ export async function createOrUpdateUserProfile(profile: Partial<UserProfile> & 
   const path = `users/${profile.uid}`;
   try {
     const isBootstrapAdmin = profile.email.toLowerCase() === ADMIN_BOOTSTRAP_EMAIL.toLowerCase();
-    let role = profile.role || 'donor';
-    if (!isBootstrapAdmin && role === 'admin') {
-      role = 'donor'; // Security: prevent self-assigning admin role
-    }
+
+    // Check if existing profile document exists to preserve existing fields and role
+    const snap = await getDoc(doc(db, 'users', profile.uid));
+    const existing = snap.exists() ? (snap.data() as UserProfile) : null;
+
+    let role: UserRole | undefined = profile.role || existing?.role;
     if (isBootstrapAdmin) {
       role = 'admin';
+    } else if (role === 'admin') {
+      role = 'donor'; // Security: prevent self-assigning admin role
     }
-    
+
     const userDoc: UserProfile = {
       uid: profile.uid,
       email: profile.email,
-      displayName: profile.displayName || profile.email.split('@')[0],
-      role: role,
-      phoneNumber: profile.phoneNumber || '',
-      organizationId: profile.organizationId || '',
-      createdAt: profile.createdAt || new Date().toISOString(),
+      displayName: profile.displayName || existing?.displayName || profile.email.split('@')[0],
+      ...(role ? { role } : {}),
+      phoneNumber: profile.phoneNumber ?? existing?.phoneNumber ?? '',
+      phone: profile.phone ?? existing?.phone ?? '',
+      organizationId: profile.organizationId ?? existing?.organizationId ?? '',
+      preferredLanguage: profile.preferredLanguage ?? existing?.preferredLanguage ?? 'en',
+      createdAt: existing?.createdAt || profile.createdAt || new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     };
 
     await setDoc(doc(db, 'users', profile.uid), userDoc, { merge: true });
+
+    // If role is volunteer, ensure volunteerProfiles entry exists
+    if (role === 'volunteer') {
+      try {
+        const volSnap = await getDoc(doc(db, 'volunteerProfiles', profile.uid));
+        if (!volSnap.exists()) {
+          await saveVolunteerProfile({
+            userId: profile.uid,
+            fullName: userDoc.displayName,
+            phone: userDoc.phone || userDoc.phoneNumber || '',
+            vehicleType: 'Two Wheeler',
+            serviceArea: 'Downtown & Metro',
+            isAvailable: true,
+            notificationRadiusKm: 10,
+            optInNotifications: true,
+          });
+        }
+      } catch (volErr) {
+        console.warn('Could not auto-initialize volunteer profile:', volErr);
+      }
+    }
 
     // If bootstrap admin, also record in admins collection
     if (isBootstrapAdmin) {
@@ -93,6 +122,7 @@ export async function createOrUpdateUserProfile(profile: Partial<UserProfile> & 
     return userDoc;
   } catch (error) {
     handleFirestoreError(error, OperationType.WRITE, path);
+    throw error;
   }
 }
 
@@ -135,6 +165,89 @@ export function subscribeDonations(
   }
 }
 
+/**
+ * Automatically identifies eligible nearby registered volunteers and sends real-time in-app collection alerts
+ */
+export async function notifyNearbyVolunteers(donation: Donation): Promise<number> {
+  let notifiedCount = 0;
+  try {
+    // Check if donation collection deadline has passed; if expired, do not dispatch alerts
+    const deadlineStr = donation.collectionDeadline || donation.pickupDeadline;
+    if (deadlineStr) {
+      const deadlineTime = new Date(deadlineStr).getTime();
+      if (!isNaN(deadlineTime) && deadlineTime < Date.now()) {
+        return 0; // Request has expired
+      }
+    }
+
+    const snaps = await getDocs(query(collection(db, 'volunteerProfiles')));
+    const promises: Promise<void>[] = [];
+
+    snaps.forEach((volDoc) => {
+      const vol = volDoc.data() as VolunteerProfile;
+
+      // Eligibility: registered, available, and opted in to collection alerts
+      if (vol.isAvailable === false || vol.optInNotifications === false) {
+        return;
+      }
+
+      // Do not notify the donor themselves if they are also registered as volunteer
+      if (vol.userId === donation.donorId) {
+        return;
+      }
+
+      // Configurable radius: default 10 km or volunteer's custom radius
+      const maxRadiusKm = vol.notificationRadiusKm || 10;
+      let isWithinRadius = false;
+      let calculatedDistance = 0;
+
+      if (typeof vol.latitude === 'number' && typeof vol.longitude === 'number' && vol.latitude !== 0) {
+        calculatedDistance = calculateDistanceKm(
+          donation.latitude,
+          donation.longitude,
+          vol.latitude,
+          vol.longitude
+        );
+        isWithinRadius = calculatedDistance <= maxRadiusKm;
+      } else {
+        // Fallback for volunteers without exact GPS set yet
+        isWithinRadius = true;
+        calculatedDistance = 3.5;
+      }
+
+      if (isWithinRadius) {
+        notifiedCount++;
+        const pickupWindowInfo = donation.availableFrom && donation.availableUntil
+          ? ` Window: ${donation.availableFrom} – ${donation.availableUntil}`
+          : '';
+        // Idempotent deterministic notification ID to prevent duplicates
+        const deterministicId = `notif_vol_${vol.userId}_${donation.id}`;
+        promises.push(
+          sendNotification({
+            id: deterministicId,
+            userId: vol.userId,
+            recipientUserId: vol.userId,
+            title: '🚨 Nearby Food Collection Alert!',
+            message: `"${donation.foodName}" (${donation.quantity} ${donation.unit}) needs pickup ~${calculatedDistance.toFixed(1)} km away.${pickupWindowInfo} Deadline: ${donation.collectionDeadline || donation.pickupDeadline}.`,
+            type: 'collection_request',
+            link: `/volunteer`,
+            donationId: donation.id,
+            distanceKm: Math.round(calculatedDistance * 10) / 10,
+            deadline: donation.collectionDeadline || donation.pickupDeadline,
+            deliveryStatus: 'delivered',
+          })
+        );
+      }
+    });
+
+    await Promise.all(promises);
+    return notifiedCount;
+  } catch (err) {
+    console.warn('Could not dispatch volunteer notifications:', err);
+    return 0;
+  }
+}
+
 export async function createDonation(data: Omit<Donation, 'id' | 'createdAt' | 'updatedAt' | 'timeline'>): Promise<string> {
   const path = 'donations';
   try {
@@ -152,6 +265,7 @@ export async function createDonation(data: Omit<Donation, 'id' | 'createdAt' | '
     const newDonation: Donation = {
       ...data,
       id: donationRef.id,
+      timeZone: data.timeZone || 'Asia/Kolkata',
       status: 'available',
       createdAt: now,
       updatedAt: now,
@@ -160,12 +274,30 @@ export async function createDonation(data: Omit<Donation, 'id' | 'createdAt' | '
 
     await setDoc(donationRef, newDonation);
 
+    // Private confirmation notification strictly isolated to the creating donor
+    await sendNotification({
+      id: `notif_donor_create_${donationRef.id}`,
+      userId: data.donorId,
+      recipientUserId: data.donorId,
+      title: 'Donation Listed Successfully',
+      message: `Your donation "${data.foodName}" has been posted.${data.availableFrom && data.availableUntil ? ` Scheduled pickup window: ${data.availableFrom} – ${data.availableUntil} (${data.pickupDate || 'Today'}, ${newDonation.timeZone}).` : ''} Nearby volunteers are being alerted.`,
+      type: 'system',
+      link: '/dashboard',
+      donationId: donationRef.id,
+      deliveryStatus: 'delivered',
+    });
+
     // Audit log
     await createAuditLog({
       action: 'DONATION_CREATED',
       performedBy: data.donorId,
       targetId: donationRef.id,
       details: `Created donation: ${data.foodName} (${data.quantity} ${data.unit})`,
+    });
+
+    // Automatically notify nearby eligible volunteers in real-time
+    notifyNearbyVolunteers(newDonation).catch((notifErr) => {
+      console.warn('Async volunteer notification warning:', notifErr);
     });
 
     return donationRef.id;
@@ -229,6 +361,377 @@ export async function claimDonationByNgo(
     });
   } catch (error) {
     handleFirestoreError(error, OperationType.UPDATE, path);
+  }
+}
+
+/**
+ * Safe transactional request acceptance by a volunteer courier
+ * Prevents race conditions and duplicate claims using a Firestore atomic transaction
+ */
+export async function acceptDonationByVolunteer(
+  donationId: string,
+  volunteerUid: string,
+  volunteerName: string,
+  volunteerPhone?: string
+): Promise<{ success: boolean; message: string; donation?: Donation }> {
+  const donationRef = doc(db, 'donations', donationId);
+  const path = `donations/${donationId}`;
+
+  try {
+    const result = await runTransaction(db, async (tx) => {
+      const snap = await tx.get(donationRef);
+      if (!snap.exists()) {
+        return { success: false, message: 'Donation listing not found.' };
+      }
+
+      const donation = snap.data() as Donation;
+
+      // Safe state check: can only accept if available or requested
+      if (donation.status !== 'available' && donation.status !== 'requested') {
+        return {
+          success: false,
+          message: `This collection request is no longer available (current status: ${donation.status.toUpperCase()}).`,
+        };
+      }
+
+      // Strict expiration check: reject if collection deadline has already passed
+      const deadlineStr = donation.collectionDeadline || donation.pickupDeadline;
+      if (deadlineStr) {
+        const deadlineTime = new Date(deadlineStr).getTime();
+        if (!isNaN(deadlineTime) && deadlineTime < Date.now()) {
+          return {
+            success: false,
+            message: 'This collection request has expired and cannot be accepted.',
+          };
+        }
+      }
+
+      // Check collision: if another volunteer already claimed
+      if (donation.assignedVolunteerId && donation.assignedVolunteerId !== volunteerUid) {
+        return {
+          success: false,
+          message: 'Another volunteer has already accepted this collection request.',
+        };
+      }
+
+      const now = new Date().toISOString();
+      const nextStatus: DonationStatus = 'accepted';
+
+      const updatedTimeline: TimelineEntry[] = [
+        ...(donation.timeline || []),
+        {
+          status: nextStatus,
+          timestamp: now,
+          actorName: volunteerName,
+          actorId: volunteerUid,
+          note: `Volunteer courier ${volunteerName} accepted collection request. En route for pickup.`,
+        },
+      ];
+
+      tx.update(donationRef, {
+        status: nextStatus,
+        assignedVolunteerId: volunteerUid,
+        assignedVolunteerName: volunteerName,
+        assignedVolunteerPhone: volunteerPhone || '',
+        acceptedAt: now,
+        claimLock: volunteerUid,
+        updatedAt: now,
+        timeline: updatedTimeline,
+      });
+
+      // Update volunteer profile's active assignment
+      const volRef = doc(db, 'volunteerProfiles', volunteerUid);
+      tx.set(
+        volRef,
+        {
+          activeAssignmentId: donationId,
+          updatedAt: now,
+        },
+        { merge: true }
+      );
+
+      // Audit log
+      const auditRef = doc(collection(db, 'auditLogs'));
+      tx.set(auditRef, {
+        id: auditRef.id,
+        action: 'COLLECTION_ACCEPTED_BY_VOLUNTEER',
+        performedBy: volunteerUid,
+        targetId: donationId,
+        details: `Volunteer ${volunteerName} accepted collection for "${donation.foodName}"`,
+        timestamp: now,
+      });
+
+      return {
+        success: true,
+        message: 'Collection request accepted! You are now assigned to pickup this food.',
+        donation: {
+          ...donation,
+          status: nextStatus,
+          assignedVolunteerId: volunteerUid,
+          assignedVolunteerName: volunteerName,
+          assignedVolunteerPhone: volunteerPhone || '',
+          acceptedAt: now,
+        },
+      };
+    });
+
+    // Notify donor & recipient NGO privately
+    if (result.success && result.donation) {
+      if (result.donation.donorId) {
+        const schedWindow = result.donation.availableFrom && result.donation.availableUntil
+          ? ` (Scheduled pickup window: ${result.donation.availableFrom} – ${result.donation.availableUntil}${result.donation.pickupDate ? `, ${result.donation.pickupDate}` : ''}${result.donation.timeZone ? ` ${result.donation.timeZone}` : ''})`
+          : '';
+        sendNotification({
+          id: `notif_donor_accepted_${result.donation.id}`,
+          userId: result.donation.donorId,
+          recipientUserId: result.donation.donorId,
+          title: 'Volunteer Accepted Collection',
+          message: `${volunteerName} has accepted your donation "${result.donation.foodName}" and is scheduled for pickup${schedWindow}.`,
+          type: 'assignment',
+          link: '/dashboard',
+          donationId: result.donation.id,
+          deliveryStatus: 'delivered',
+        }).catch(console.warn);
+      }
+
+      if (result.donation.assignedNgoId) {
+        sendNotification({
+          userId: result.donation.assignedNgoId,
+          recipientUserId: result.donation.assignedNgoId,
+          title: 'Volunteer Courier En Route',
+          message: `${volunteerName} is collecting food donation "${result.donation.foodName}" for delivery.`,
+          type: 'status_change',
+          link: '/dashboard',
+          donationId: result.donation.id,
+        }).catch(console.warn);
+      }
+    }
+
+    return result;
+  } catch (error) {
+    handleFirestoreError(error, OperationType.WRITE, path);
+    return { success: false, message: 'Transaction error accepting collection request.' };
+  }
+}
+
+/**
+ * Safe transactional cancellation of volunteer collection before pickup
+ */
+export async function cancelVolunteerCollection(
+  donationId: string,
+  volunteerUid: string,
+  volunteerName: string,
+  reason?: string
+): Promise<{ success: boolean; message: string }> {
+  const donationRef = doc(db, 'donations', donationId);
+  const path = `donations/${donationId}`;
+
+  try {
+    const result = await runTransaction(db, async (tx) => {
+      const snap = await tx.get(donationRef);
+      if (!snap.exists()) {
+        return { success: false, message: 'Donation listing not found.' };
+      }
+
+      const donation = snap.data() as Donation;
+
+      if (donation.assignedVolunteerId !== volunteerUid) {
+        return { success: false, message: 'You are not assigned to this collection.' };
+      }
+
+      if (donation.status !== 'accepted' && donation.status !== 'scheduled') {
+        return {
+          success: false,
+          message: `Cannot cancel collection in status "${donation.status.toUpperCase()}". Food has already been picked up.`,
+        };
+      }
+
+      const now = new Date().toISOString();
+      const revertedStatus: DonationStatus = donation.assignedNgoId ? 'requested' : 'available';
+
+      const updatedTimeline: TimelineEntry[] = [
+        ...(donation.timeline || []),
+        {
+          status: revertedStatus,
+          timestamp: now,
+          actorName: volunteerName,
+          actorId: volunteerUid,
+          note: `Volunteer released collection request (${reason || 'Change in availability'}). Reopened for nearby couriers.`,
+        },
+      ];
+
+      tx.update(donationRef, {
+        status: revertedStatus,
+        assignedVolunteerId: '',
+        assignedVolunteerName: '',
+        assignedVolunteerPhone: '',
+        acceptedAt: '',
+        claimLock: donation.assignedNgoId || '',
+        updatedAt: now,
+        timeline: updatedTimeline,
+      });
+
+      const volRef = doc(db, 'volunteerProfiles', volunteerUid);
+      tx.set(
+        volRef,
+        {
+          activeAssignmentId: '',
+          updatedAt: now,
+        },
+        { merge: true }
+      );
+
+      return {
+        success: true,
+        message: 'Collection assignment cancelled. Donation has been made available again.',
+        revertedDonation: {
+          ...donation,
+          status: revertedStatus,
+        },
+      };
+    });
+
+    if (result.success && result.revertedDonation) {
+      if (result.revertedDonation.donorId) {
+        sendNotification({
+          userId: result.revertedDonation.donorId,
+          title: 'Collection Assignment Released',
+          message: `Volunteer ${volunteerName} had to release your collection request. It is now open again for nearby volunteers.`,
+          type: 'alert',
+          link: '/dashboard',
+        }).catch(console.warn);
+      }
+      notifyNearbyVolunteers(result.revertedDonation).catch(console.warn);
+    }
+
+    return { success: result.success, message: result.message };
+  } catch (error) {
+    handleFirestoreError(error, OperationType.WRITE, path);
+    return { success: false, message: 'Error cancelling collection.' };
+  }
+}
+
+/**
+ * Validated collection status progression
+ * AVAILABLE → ACCEPTED → PICKED_UP → IN_TRANSIT → DELIVERED → COMPLETED
+ */
+export async function transitionCollectionStatus(
+  donationId: string,
+  nextStatus: DonationStatus,
+  actorId: string,
+  actorName: string,
+  note?: string,
+  extra?: Partial<Donation>
+): Promise<{ success: boolean; message: string }> {
+  const donationRef = doc(db, 'donations', donationId);
+  const path = `donations/${donationId}`;
+
+  try {
+    return await runTransaction(db, async (tx) => {
+      const snap = await tx.get(donationRef);
+      if (!snap.exists()) {
+        return { success: false, message: 'Donation not found' };
+      }
+
+      const donation = snap.data() as Donation;
+      const current = donation.status;
+
+      const allowedTransitions: Record<DonationStatus, DonationStatus[]> = {
+        available: ['requested', 'accepted', 'cancelled', 'expired'],
+        requested: ['accepted', 'available', 'cancelled', 'expired'],
+        accepted: ['picked_up', 'available', 'cancelled'],
+        scheduled: ['picked_up', 'available', 'cancelled'],
+        picked_up: ['in_transit', 'delivered', 'cancelled'],
+        in_transit: ['delivered', 'cancelled'],
+        delivered: ['completed'],
+        completed: [],
+        cancelled: [],
+        expired: [],
+      };
+
+      if (!allowedTransitions[current]?.includes(nextStatus)) {
+        return {
+          success: false,
+          message: `Invalid transition from "${current}" to "${nextStatus}".`,
+        };
+      }
+
+      const now = new Date().toISOString();
+
+      const updatedTimeline: TimelineEntry[] = [
+        ...(donation.timeline || []),
+        {
+          status: nextStatus,
+          timestamp: now,
+          actorName,
+          actorId,
+          note: note || `Status updated to ${nextStatus.replace('_', ' ').toUpperCase()}`,
+        },
+      ];
+
+      const updates: Partial<Donation> = {
+        ...extra,
+        status: nextStatus,
+        updatedAt: now,
+        timeline: updatedTimeline,
+      };
+
+      if (nextStatus === 'picked_up') {
+        updates.pickedUpAt = now;
+      } else if (nextStatus === 'delivered') {
+        updates.deliveredAt = now;
+      } else if (nextStatus === 'completed') {
+        updates.completedAt = now;
+      }
+
+      tx.update(donationRef, updates);
+
+      // If delivered or completed, create impact record & clean up volunteer stats
+      if (nextStatus === 'delivered' || nextStatus === 'completed') {
+        const quantityKg = donation.unit.toLowerCase() === 'kg'
+          ? donation.quantity
+          : (donation.servings ? donation.servings * 0.4 : donation.quantity * 0.5);
+        const estimatedMeals = donation.servings || Math.round(quantityKg * 2.5);
+
+        const impactRef = doc(collection(db, 'impactRecords'));
+        tx.set(impactRef, {
+          id: impactRef.id,
+          donationId: donation.id,
+          foodName: donation.foodName,
+          quantityKg: Math.round(quantityKg * 10) / 10,
+          estimatedMeals,
+          donorId: donation.donorId,
+          ngoId: donation.assignedNgoId || 'community_shelter',
+          volunteerId: donation.assignedVolunteerId || actorId,
+          deliveredAt: now,
+        });
+
+        // Update volunteer stats
+        if (donation.assignedVolunteerId) {
+          const volRef = doc(db, 'volunteerProfiles', donation.assignedVolunteerId);
+          tx.set(
+            volRef,
+            {
+              activeAssignmentId: '',
+              isAvailable: true,
+              updatedAt: now,
+            },
+            { merge: true }
+          );
+        }
+
+        // Auto-stop any active live tracking session
+        stopLiveTracking(donation.id).catch(console.warn);
+      }
+
+      return {
+        success: true,
+        message: `Status transitioned to ${nextStatus.replace('_', ' ').toUpperCase()}`,
+      };
+    });
+  } catch (error) {
+    handleFirestoreError(error, OperationType.WRITE, path);
+    return { success: false, message: 'Error updating collection status.' };
   }
 }
 
@@ -465,6 +968,20 @@ export function subscribeVolunteerProfiles(callback: (vols: VolunteerProfile[]) 
   }
 }
 
+export async function getVolunteerProfile(userId: string): Promise<VolunteerProfile | null> {
+  const path = `volunteerProfiles/${userId}`;
+  try {
+    const snap = await getDoc(doc(db, 'volunteerProfiles', userId));
+    if (snap.exists()) {
+      return { id: snap.id, ...snap.data() } as VolunteerProfile;
+    }
+    return null;
+  } catch (error) {
+    handleFirestoreError(error, OperationType.GET, path);
+    return null;
+  }
+}
+
 export async function saveVolunteerProfile(profile: Partial<VolunteerProfile> & { userId: string; fullName: string }): Promise<void> {
   const path = `volunteerProfiles/${profile.userId}`;
   try {
@@ -479,6 +996,12 @@ export async function saveVolunteerProfile(profile: Partial<VolunteerProfile> & 
       isAvailable: profile.isAvailable ?? true,
       totalPickups: profile.totalPickups || 0,
       activeAssignmentId: profile.activeAssignmentId || '',
+      latitude: profile.latitude,
+      longitude: profile.longitude,
+      address: profile.address,
+      notificationRadiusKm: profile.notificationRadiusKm ?? 10,
+      optInNotifications: profile.optInNotifications ?? true,
+      emergencyContact: profile.emergencyContact,
       createdAt: profile.createdAt || now,
       updatedAt: now,
     };
@@ -520,17 +1043,22 @@ export function subscribeNotifications(userId: string, callback: (notifications:
   }
 }
 
-export async function sendNotification(data: Omit<InAppNotification, 'id' | 'createdAt' | 'read'>): Promise<void> {
+export async function sendNotification(
+  data: Omit<InAppNotification, 'id' | 'createdAt' | 'read'> & { id?: string }
+): Promise<void> {
   const path = 'notifications';
   try {
-    const notifRef = doc(collection(db, 'notifications'));
+    const notifId = data.id || doc(collection(db, 'notifications')).id;
+    const notifRef = doc(db, 'notifications', notifId);
     const notifDoc: InAppNotification = {
       ...data,
-      id: notifRef.id,
+      id: notifId,
+      recipientUserId: data.recipientUserId || data.userId,
+      deliveryStatus: data.deliveryStatus || 'delivered',
       read: false,
       createdAt: new Date().toISOString(),
     };
-    await setDoc(notifRef, notifDoc);
+    await setDoc(notifRef, notifDoc, { merge: true });
   } catch (error) {
     console.warn('Notification send failed:', error);
   }
@@ -539,7 +1067,11 @@ export async function sendNotification(data: Omit<InAppNotification, 'id' | 'cre
 export async function markNotificationAsRead(id: string): Promise<void> {
   const path = `notifications/${id}`;
   try {
-    await updateDoc(doc(db, 'notifications', id), { read: true });
+    await updateDoc(doc(db, 'notifications', id), {
+      read: true,
+      readAt: new Date().toISOString(),
+      deliveryStatus: 'read',
+    });
   } catch (error) {
     handleFirestoreError(error, OperationType.UPDATE, path);
   }
@@ -550,7 +1082,14 @@ export async function markAllNotificationsAsRead(userId: string): Promise<void> 
   try {
     const q = query(collection(db, 'notifications'), where('userId', '==', userId), where('read', '==', false));
     const snaps = await getDocs(q);
-    const promises = snaps.docs.map((d) => updateDoc(d.ref, { read: true }));
+    const now = new Date().toISOString();
+    const promises = snaps.docs.map((d) =>
+      updateDoc(d.ref, {
+        read: true,
+        readAt: now,
+        deliveryStatus: 'read',
+      })
+    );
     await Promise.all(promises);
   } catch (error) {
     handleFirestoreError(error, OperationType.UPDATE, path);

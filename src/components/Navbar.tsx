@@ -17,6 +17,7 @@ import {
   Info,
   Globe,
   ChevronDown,
+  Bike,
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { useLanguage } from '../context/LanguageContext';
@@ -27,9 +28,15 @@ interface NavbarProps {
   currentTab: string;
   setCurrentTab: (tab: string) => void;
   onOpenCreateDonation: () => void;
+  onSelectRoleBeforeLogin?: (role: 'donor' | 'volunteer') => void;
 }
 
-export const Navbar: React.FC<NavbarProps> = ({ currentTab, setCurrentTab, onOpenCreateDonation }) => {
+export const Navbar: React.FC<NavbarProps> = ({
+  currentTab,
+  setCurrentTab,
+  onOpenCreateDonation,
+  onSelectRoleBeforeLogin,
+}) => {
   const { currentUser, userProfile, logout, isAdmin, isNgo, isDonor, isVolunteer } = useAuth();
   const { language, setLanguage, t, availableLanguages } = useLanguage();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
@@ -128,6 +135,25 @@ export const Navbar: React.FC<NavbarProps> = ({ currentTab, setCurrentTab, onOpe
                 </button>
               </>
             )}
+
+            <button
+              onClick={() => {
+                if (!currentUser) {
+                  onSelectRoleBeforeLogin && onSelectRoleBeforeLogin('volunteer');
+                  handleNav('auth');
+                } else {
+                  handleNav('volunteer');
+                }
+              }}
+              className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-colors flex items-center gap-1.5 ${
+                currentTab === 'volunteer'
+                  ? 'bg-emerald-50 text-emerald-800 font-semibold'
+                  : 'text-stone-600 hover:text-emerald-700 hover:bg-stone-50'
+              }`}
+            >
+              <Bike className="w-4 h-4 text-emerald-600" />
+              <span>Volunteer</span>
+            </button>
 
             <button
               onClick={() => handleNav('impact')}
@@ -257,7 +283,9 @@ export const Navbar: React.FC<NavbarProps> = ({ currentTab, setCurrentTab, onOpe
                               }`}
                               onClick={() => {
                                 markNotificationAsRead(notif.id);
-                                if (notif.link) {
+                                if (notif.type === 'collection_request' || notif.link?.includes('volunteer')) {
+                                  handleNav('volunteer');
+                                } else if (notif.link) {
                                   handleNav('dashboard');
                                 }
                               }}
@@ -418,6 +446,20 @@ export const Navbar: React.FC<NavbarProps> = ({ currentTab, setCurrentTab, onOpe
               </button>
             </>
           )}
+          <button
+            onClick={() => {
+              if (!currentUser) {
+                onSelectRoleBeforeLogin && onSelectRoleBeforeLogin('volunteer');
+                handleNav('auth');
+              } else {
+                handleNav('volunteer');
+              }
+            }}
+            className="w-full text-left px-3 py-2.5 rounded-xl font-medium text-stone-700 hover:bg-emerald-50 hover:text-emerald-800 flex items-center gap-2"
+          >
+            <Bike className="w-4 h-4 text-emerald-600" />
+            <span>Volunteer & Food Rescue</span>
+          </button>
           <button
             onClick={() => handleNav('impact')}
             className="w-full text-left px-3 py-2.5 rounded-xl font-medium text-stone-700 hover:bg-emerald-50 hover:text-emerald-800 flex items-center gap-2"

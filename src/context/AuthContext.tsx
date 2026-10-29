@@ -27,16 +27,17 @@ interface AuthContextType {
   firebaseProjectId: string;
   signInWithEmail: (email: string, pass: string) => Promise<void>;
   signUpWithEmail: (email: string, pass: string, displayName: string, role: UserRole) => Promise<void>;
-  signInWithGoogle: () => Promise<void>;
+  signInWithGoogle: (selectedRole?: UserRole) => Promise<{ isNewUser: boolean; profile: UserProfile }>;
   logout: () => Promise<void>;
   resetPassword: (email: string) => Promise<void>;
-  refreshProfile: () => Promise<void>;
+  refreshProfile: (desiredRole?: UserRole) => Promise<UserProfile | null>;
   updateRole: (newRole: UserRole) => Promise<void>;
   clearError: () => void;
   isAdmin: boolean;
   isNgo: boolean;
   isDonor: boolean;
   isVolunteer: boolean;
+  hasRole: boolean;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
@@ -150,48 +151,67 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [error, setError] = useState<string | null>(null);
   const [authProviderError, setAuthProviderError] = useState<AuthProviderErrorType>(null);
 
-  const refreshProfile = async () => {
+  const refreshProfile = async (desiredRole?: UserRole): Promise<UserProfile | null> => {
     if (!auth.currentUser) {
       setUserProfile(null);
-      return;
+      return null;
     }
 
     const isBootstrapAdmin = auth.currentUser.email?.toLowerCase() === ADMIN_BOOTSTRAP_EMAIL.toLowerCase();
-    const fallbackProfile: UserProfile = {
-      uid: auth.currentUser.uid,
-      email: auth.currentUser.email || '',
-      displayName: auth.currentUser.displayName || auth.currentUser.email?.split('@')[0] || 'Member',
-      role: isBootstrapAdmin ? 'admin' : 'donor',
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-    };
 
     try {
       let profile = await getUserProfile(auth.currentUser.uid);
 
       if (!profile) {
-        // Auto-create initial profile in Firestore
+        // Initial profile creation
+        const roleToAssign = isBootstrapAdmin
+          ? 'admin'
+          : desiredRole;
+
+        const newProfile: UserProfile = {
+          uid: auth.currentUser.uid,
+          email: auth.currentUser.email || '',
+          displayName: auth.currentUser.displayName || auth.currentUser.email?.split('@')[0] || 'Member',
+          ...(roleToAssign ? { role: roleToAssign } : {}),
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        };
+
         try {
-          profile = await createOrUpdateUserProfile(fallbackProfile);
+          profile = await createOrUpdateUserProfile(newProfile);
         } catch {
-          profile = fallbackProfile;
+          profile = newProfile;
         }
-      } else if (isBootstrapAdmin && profile.role !== 'admin') {
-        // Elevate bootstrap admin
-        try {
+      } else {
+        // Existing profile in Firestore: PRESERVE existing role!
+        if (isBootstrapAdmin && profile.role !== 'admin') {
           profile = await createOrUpdateUserProfile({
             ...profile,
             role: 'admin',
           });
-        } catch {
-          profile = { ...profile, role: 'admin' };
+        } else if (!profile.role && desiredRole) {
+          // If existing profile was missing a role, apply desiredRole
+          profile = await createOrUpdateUserProfile({
+            ...profile,
+            role: desiredRole,
+          });
         }
       }
 
-      setUserProfile(profile || fallbackProfile);
+      setUserProfile(profile);
+      return profile;
     } catch (err: any) {
       console.warn('Profile sync fallback:', err);
-      setUserProfile(fallbackProfile);
+      const fallback: UserProfile = {
+        uid: auth.currentUser.uid,
+        email: auth.currentUser.email || '',
+        displayName: auth.currentUser.displayName || 'Member',
+        role: isBootstrapAdmin ? 'admin' : (desiredRole || 'donor'),
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      };
+      setUserProfile(fallback);
+      return fallback;
     }
   };
 
@@ -291,23 +311,51 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   };
 
-  const signInWithGoogle = async () => {
+  const signInWithGoogle = async (selectedRole?: UserRole): Promise<{ isNewUser: boolean; profile: UserProfile }> => {
     setError(null);
     setAuthProviderError(null);
     const provider = new GoogleAuthProvider();
     provider.setCustomParameters({ prompt: 'select_account' });
 
     try {
-      await signInWithPopup(auth, provider);
-      await refreshProfile();
+      const res = await signInWithPopup(auth, provider);
+      const user = res.user;
+
+      const isBootstrapAdmin = user.email?.toLowerCase() === ADMIN_BOOTSTRAP_EMAIL.toLowerCase();
+      const existing = await getUserProfile(user.uid);
+
+      let finalProfile: UserProfile;
+
+      if (existing && existing.role) {
+        // Returning user with already saved role: PRESERVE SAVED ROLE!
+        finalProfile = existing;
+        if (isBootstrapAdmin && existing.role !== 'admin') {
+          finalProfile = await createOrUpdateUserProfile({ ...existing, role: 'admin' });
+        }
+      } else {
+        // New user OR existing user without a role:
+        const roleToAssign: UserRole = isBootstrapAdmin
+          ? 'admin'
+          : (selectedRole === 'volunteer' || selectedRole === 'ngo' ? selectedRole : 'donor');
+
+        finalProfile = await createOrUpdateUserProfile({
+          uid: user.uid,
+          email: user.email || '',
+          displayName: user.displayName || user.email?.split('@')[0] || 'Member',
+          role: roleToAssign,
+        });
+      }
+
+      setUserProfile(finalProfile);
       setError(null);
       setAuthProviderError(null);
+      return { isNewUser: !existing, profile: finalProfile };
     } catch (err: any) {
       // If popup was blocked (common on strict mobile browsers), attempt redirect flow
       if (err?.code === 'auth/popup-blocked') {
         try {
           await signInWithRedirect(auth, provider);
-          return;
+          return { isNewUser: false, profile: null as any };
         } catch (redirectErr) {
           const { message, providerError } = mapAuthError(redirectErr, 'google');
           setError(message);
@@ -408,6 +456,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         isNgo,
         isDonor,
         isVolunteer,
+        hasRole: Boolean(userProfile?.role),
       }}
     >
       {children}

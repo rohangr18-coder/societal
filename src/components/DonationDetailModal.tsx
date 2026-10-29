@@ -19,6 +19,7 @@ import {
   ExternalLink,
   QrCode,
   Radio,
+  Calendar,
 } from 'lucide-react';
 import { Donation, DonationStatus } from '../types';
 import { useAuth } from '../context/AuthContext';
@@ -137,8 +138,10 @@ export const DonationDetailModal: React.FC<DonationDetailModalProps> = ({ donati
       requested: { bg: 'bg-amber-100', text: 'text-amber-800', label: 'Requested by NGO' },
       accepted: { bg: 'bg-teal-100', text: 'text-teal-800', label: 'Accepted - Awaiting Pickup' },
       scheduled: { bg: 'bg-blue-100', text: 'text-blue-800', label: 'Volunteer Assigned' },
-      picked_up: { bg: 'bg-indigo-100', text: 'text-indigo-800', label: 'In Transit / Picked Up' },
-      delivered: { bg: 'bg-stone-100', text: 'text-stone-800', label: 'Delivered & Impact Verified' },
+      picked_up: { bg: 'bg-indigo-100', text: 'text-indigo-800', label: 'Food Picked Up' },
+      in_transit: { bg: 'bg-indigo-100', text: 'text-indigo-800', label: 'In Transit to Shelter' },
+      delivered: { bg: 'bg-emerald-100', text: 'text-emerald-800', label: 'Delivered to Shelter' },
+      completed: { bg: 'bg-stone-100', text: 'text-stone-800', label: 'Mission Completed & Verified' },
       cancelled: { bg: 'bg-red-100', text: 'text-red-800', label: 'Cancelled' },
       expired: { bg: 'bg-stone-200', text: 'text-stone-600', label: 'Expired' },
     };
@@ -234,6 +237,48 @@ export const DonationDetailModal: React.FC<DonationDetailModalProps> = ({ donati
             </div>
           </div>
 
+          {/* Dedicated Scheduled Pickup Window & Deadline Card */}
+          <div className="bg-emerald-50/60 border border-emerald-200/80 rounded-2xl p-4 text-xs space-y-2.5">
+            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-emerald-100 pb-2">
+              <span className="font-bold text-emerald-950 flex items-center gap-1.5 uppercase tracking-wider text-[11px]">
+                <Calendar className="w-4 h-4 text-emerald-700" />
+                Scheduled Pickup Window
+              </span>
+              <span className="px-2.5 py-0.5 rounded-full text-[11px] font-semibold bg-emerald-100 text-emerald-900 border border-emerald-200">
+                Time Zone: {donation.timeZone || 'Asia/Kolkata'}
+              </span>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-1">
+              <div>
+                <span className="text-stone-500 block text-[11px]">Pickup Date</span>
+                <span className="font-bold text-stone-900 text-sm">
+                  {donation.pickupDate || 'Today'}
+                </span>
+              </div>
+              <div>
+                <span className="text-stone-500 block text-[11px]">Available Hours</span>
+                <span className="font-bold text-emerald-900 text-sm">
+                  {donation.availableFrom && donation.availableUntil
+                    ? `${donation.availableFrom} – ${donation.availableUntil}`
+                    : 'Flexible Window'}
+                </span>
+              </div>
+              <div>
+                <span className="text-stone-500 block text-[11px]">Collection Deadline</span>
+                <span className="font-bold text-amber-900 text-sm">
+                  {donation.collectionDeadline
+                    ? donation.collectionDeadline.replace('T', ' ')
+                    : donation.pickupDeadline}
+                </span>
+              </div>
+            </div>
+            {donation.preferredPickupTime && (
+              <div className="pt-1 text-[11px] text-emerald-800">
+                Preferred Pickup Time: <strong>{donation.preferredPickupTime}</strong>
+              </div>
+            )}
+          </div>
+
           {/* Stakeholders Info (Donor, NGO, Volunteer) */}
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
             <div className="p-3.5 rounded-xl border border-stone-100 bg-white shadow-2xs">
@@ -321,7 +366,7 @@ export const DonationDetailModal: React.FC<DonationDetailModalProps> = ({ donati
             </div>
             <div className="flex flex-wrap items-center gap-2">
               {/* Live Tracking button */}
-              {['accepted', 'scheduled', 'picked_up'].includes(donation.status) && (
+              {['accepted', 'scheduled', 'picked_up', 'in_transit'].includes(donation.status) && (
                 <button
                   type="button"
                   onClick={() => setTrackingModalOpen(true)}

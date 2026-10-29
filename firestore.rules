@@ -48,12 +48,13 @@ service cloud.firestore {
         incoming().uid == userId &&
         incoming().displayName is string && incoming().displayName.size() <= 128 &&
         incoming().email is string && incoming().email.size() <= 256 &&
-        incoming().role in ['donor', 'ngo', 'volunteer', 'admin'];
+        (incoming().role in ['donor', 'ngo', 'volunteer'] || isAdmin());
       allow update: if isSignedIn() && (
         isAdmin() ||
         (request.auth.uid == userId &&
          incoming().uid == userId &&
-         (!incoming().diff(existing()).affectedKeys().hasAny(['role'])))
+         (incoming().role in ['donor', 'ngo', 'volunteer']) &&
+         (!incoming().diff(existing()).affectedKeys().hasAny(['uid', 'email'])))
       );
       allow delete: if isAdmin();
     }
@@ -108,21 +109,41 @@ service cloud.firestore {
          incoming().donorId == request.auth.uid &&
          existing().status in ['available', 'requested', 'accepted']) ||
         // NGO requesting or claiming the donation
-        (existing().status in ['available', 'requested', 'accepted'] &&
-         incoming().diff(existing()).affectedKeys().hasOnly(['status', 'assignedNgoId', 'assignedNgoName', 'updatedAt', 'pickupDeadline', 'claimLock', 'timeline'])) ||
-        // Volunteer updating status to scheduled, picked_up, or delivered
-        (incoming().diff(existing()).affectedKeys().hasOnly(['status', 'assignedVolunteerId', 'assignedVolunteerName', 'updatedAt', 'timeline']))
+        (incoming().diff(existing()).affectedKeys().hasOnly([
+          'status', 'assignedNgoId', 'assignedNgoName', 'updatedAt', 'pickupDeadline',
+          'pickupDate', 'availableFrom', 'availableUntil', 'collectionDeadline', 'preferredPickupTime', 'timeZone',
+          'claimLock', 'timeline', 'dropoffAddress', 'dropoffLatitude', 'dropoffLongitude'
+        ])) ||
+        // Volunteer accepting, updating progress, or cancelling assignment
+        (incoming().diff(existing()).affectedKeys().hasOnly([
+          'status', 'assignedVolunteerId', 'assignedVolunteerName', 'assignedVolunteerPhone',
+          'acceptedAt', 'pickedUpAt', 'deliveredAt', 'completedAt', 'claimLock',
+          'pickupDeadline', 'pickupDate', 'availableFrom', 'availableUntil', 'collectionDeadline', 'timeZone',
+          'dropoffAddress', 'dropoffLatitude', 'dropoffLongitude', 'updatedAt', 'timeline'
+        ]))
       );
 
       allow delete: if isAdmin() || (isSignedIn() && existing().donorId == request.auth.uid && existing().status == 'available');
     }
 
-    // In-app Notifications - private to user
+    // In-app Notifications - private to recipient user
     match /notifications/{notifId} {
-      allow read: if isSignedIn() && (resource.data.userId == request.auth.uid || isAdmin());
+      allow read: if isSignedIn() && (
+        resource.data.userId == request.auth.uid ||
+        (resource.data.recipientUserId != null && resource.data.recipientUserId == request.auth.uid) ||
+        isAdmin()
+      );
       allow create: if isSignedIn();
-      allow update: if isSignedIn() && (resource.data.userId == request.auth.uid || isAdmin());
-      allow delete: if isSignedIn() && (resource.data.userId == request.auth.uid || isAdmin());
+      allow update: if isSignedIn() && (
+        resource.data.userId == request.auth.uid ||
+        (resource.data.recipientUserId != null && resource.data.recipientUserId == request.auth.uid) ||
+        isAdmin()
+      );
+      allow delete: if isSignedIn() && (
+        resource.data.userId == request.auth.uid ||
+        (resource.data.recipientUserId != null && resource.data.recipientUserId == request.auth.uid) ||
+        isAdmin()
+      );
     }
 
     // Impact Records - public impact data

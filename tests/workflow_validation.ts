@@ -40,10 +40,12 @@ function runTests() {
   const validTransitions: Record<DonationStatus, DonationStatus[]> = {
     available: ['requested', 'cancelled', 'expired'],
     requested: ['accepted', 'available', 'cancelled'],
-    accepted: ['scheduled', 'available', 'cancelled'],
+    accepted: ['scheduled', 'picked_up', 'available', 'cancelled'],
     scheduled: ['picked_up', 'accepted', 'cancelled'],
-    picked_up: ['delivered', 'scheduled'],
-    delivered: [], // Terminal state
+    picked_up: ['in_transit', 'delivered', 'scheduled'],
+    in_transit: ['delivered', 'cancelled'],
+    delivered: ['completed'],
+    completed: [], // Terminal state
     cancelled: [], // Terminal state
     expired: [],   // Terminal state
   };
