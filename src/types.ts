@@ -20,6 +20,21 @@ export interface TimelineEntry {
   note?: string;
 }
 
+export interface NotificationPreferences {
+  // Donor preferences
+  donorOnClaimed?: boolean;
+  donorOnPickup?: boolean;
+  donorOnDelivered?: boolean;
+  // Volunteer preferences
+  volunteerNearby?: boolean;
+  volunteerUrgent?: boolean;
+  volunteerRouteUpdates?: boolean;
+  // Admin preferences
+  adminNewDonations?: boolean;
+  adminUrgentEscalations?: boolean;
+  adminNgoRegistrations?: boolean;
+}
+
 export interface UserProfile {
   uid: string;
   email: string;
@@ -32,7 +47,10 @@ export interface UserProfile {
   pushNotificationsEnabled?: boolean;
   pushNotificationPermission?: 'default' | 'granted' | 'denied';
   fcmToken?: string;
+  fcmTokens?: string[];
+  lastTokenUpdate?: string;
   notificationRadiusKm?: number;
+  notificationPreferences?: NotificationPreferences;
   createdAt: string;
   updatedAt: string;
 }
@@ -126,6 +144,7 @@ export interface VolunteerProfile {
   fcmTokens?: string[];
   pushNotificationsEnabled?: boolean;
   pushNotificationPermission?: 'default' | 'granted' | 'denied';
+  notificationPreferences?: NotificationPreferences;
   lastTokenUpdate?: string;
   createdAt: string;
   updatedAt: string;

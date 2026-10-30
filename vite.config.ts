@@ -58,6 +58,10 @@ function apiServerPlugin(): Plugin {
           }
 
           if (req.url === '/api/notifications/fcm-status' && req.method === 'GET') {
+            const vapidConfigured = Boolean(
+              process.env.VITE_FIREBASE_VAPID_KEY ||
+              process.env.FIREBASE_VAPID_KEY
+            );
             res.end(
               JSON.stringify({
                 status: 'ok',
@@ -65,6 +69,21 @@ function apiServerPlugin(): Plugin {
                 messagingSenderId: '1073054435184',
                 serviceWorkerScope: '/',
                 serviceWorkerFile: '/firebase-messaging-sw.js',
+                vapidKeyConfigured: vapidConfigured,
+                timestamp: new Date().toISOString(),
+              })
+            );
+            return;
+          }
+
+          if (req.url === '/api/notifications/test-push' && req.method === 'POST') {
+            const body = await getBody();
+            res.end(
+              JSON.stringify({
+                success: true,
+                message: 'Test notification processed successfully',
+                messageId: `msg_${Date.now()}`,
+                title: body?.title || '🚨 ResQBite Notification Test',
                 timestamp: new Date().toISOString(),
               })
             );
@@ -73,7 +92,8 @@ function apiServerPlugin(): Plugin {
 
           if (req.url === '/api/notifications/fcm-send' && req.method === 'POST') {
             const body = await getBody();
-            const recipientTokens = Array.isArray(body?.tokens) ? body.tokens.filter(Boolean) : [];
+            const rawTokens = Array.isArray(body?.tokens) ? body.tokens.filter(Boolean) : [];
+            const recipientTokens = Array.from(new Set(rawTokens));
             const recipientVolunteers = Array.isArray(body?.volunteerIds) ? body.volunteerIds : [];
             const sentCount = recipientTokens.length > 0 ? recipientTokens.length : (recipientVolunteers.length > 0 ? recipientVolunteers.length : 1);
 

@@ -142,9 +142,9 @@ async function testVolunteerClusterMap() {
 
   // --- Test 3: Proximity Filtering Logic ---
   console.log('\n--- Test 3: Proximity Radius Filter Calculations ---');
-  const dist1 = calculateDistanceKm(volunteerLat, volunteerLng, dCluster1.latitude, dCluster1.longitude);
-  const dist2 = calculateDistanceKm(volunteerLat, volunteerLng, dCluster2.latitude, dCluster2.longitude);
-  const distIso = calculateDistanceKm(volunteerLat, volunteerLng, dIsolated.latitude, dIsolated.longitude);
+  const dist1 = calculateDistanceKm(volunteerLat, volunteerLng, dCluster1.latitude, dCluster1.longitude)!;
+  const dist2 = calculateDistanceKm(volunteerLat, volunteerLng, dCluster2.latitude, dCluster2.longitude)!;
+  const distIso = calculateDistanceKm(volunteerLat, volunteerLng, dIsolated.latitude, dIsolated.longitude)!;
 
   assert(dist1 <= 3.0, `Indiranagar donation is within 3 km (${dist1.toFixed(2)} km)`);
   assert(dist2 <= 3.0, `Domlur donation is within 3 km (${dist2.toFixed(2)} km)`);
@@ -154,7 +154,7 @@ async function testVolunteerClusterMap() {
   const within5km = testDonations.filter((d) => {
     if (d.id === 'd_expired') return false;
     const dist = calculateDistanceKm(volunteerLat, volunteerLng, d.latitude, d.longitude);
-    return dist <= 5.0;
+    return dist !== null && dist <= 5.0;
   });
   assert(within5km.length === 2, 'Proximity filter 5 km returns only the 2 nearby donations');
 
@@ -162,7 +162,7 @@ async function testVolunteerClusterMap() {
   const within20km = testDonations.filter((d) => {
     if (d.id === 'd_expired') return false;
     const dist = calculateDistanceKm(volunteerLat, volunteerLng, d.latitude, d.longitude);
-    return dist <= 20.0;
+    return dist !== null && dist <= 20.0;
   });
   assert(within20km.length === 3, 'Proximity filter 20 km includes the distant Whitefield donation');
 

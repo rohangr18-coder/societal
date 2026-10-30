@@ -91,8 +91,8 @@ function runVolunteerTests() {
     isAvailable: false,
   };
 
-  const dist1 = calculateDistanceKm(vol1.lat, vol1.lng, donorLat, donorLng);
-  const dist2 = calculateDistanceKm(vol2.lat, vol2.lng, donorLat, donorLng);
+  const dist1 = calculateDistanceKm(vol1.lat, vol1.lng, donorLat, donorLng)!;
+  const dist2 = calculateDistanceKm(vol2.lat, vol2.lng, donorLat, donorLng)!;
 
   assert('Sarah is within 10 km radius', dist1 < 10, `dist: ${dist1.toFixed(2)} km`);
   assert('Raj is outside 10 km radius', dist2 > 10, `dist: ${dist2.toFixed(2)} km`);
@@ -102,7 +102,7 @@ function runVolunteerTests() {
   const eligibleVolunteers = volunteers.filter((vol) => {
     if (!vol.isAvailable || !vol.optIn) return false;
     const d = calculateDistanceKm(vol.lat, vol.lng, donorLat, donorLng);
-    return d <= vol.radiusKm;
+    return d !== null && d <= vol.radiusKm;
   });
 
   assert(

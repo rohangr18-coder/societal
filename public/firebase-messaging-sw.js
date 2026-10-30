@@ -62,7 +62,7 @@ if (messaging) {
   });
 }
 
-// Handle notification click: focus or open the volunteer dashboard
+// Handle notification click: focus or open the appropriate page
 self.addEventListener('notificationclick', (event) => {
   event.notification.close();
 
@@ -70,22 +70,23 @@ self.addEventListener('notificationclick', (event) => {
     return;
   }
 
-  const targetUrl = event.notification.data?.url || '/volunteer';
+  const targetUrl = event.notification.data?.url || '/';
+  const fullTargetUrl = new URL(targetUrl, self.location.origin).href;
 
   event.waitUntil(
     clients.matchAll({ type: 'window', includeUncontrolled: true }).then((windowClients) => {
-      // If a tab is already open, focus it and navigate
+      // If an existing app tab is open, focus it and navigate
       for (const client of windowClients) {
-        if ('focus' in client) {
-          if (client.url.includes('/volunteer') || client.url.includes(self.location.origin)) {
-            client.navigate(targetUrl);
-            return client.focus();
+        if ('focus' in client && client.url.startsWith(self.location.origin)) {
+          if ('navigate' in client) {
+            client.navigate(fullTargetUrl);
           }
+          return client.focus();
         }
       }
       // If no tab is open, open a new window
       if (clients.openWindow) {
-        return clients.openWindow(targetUrl);
+        return clients.openWindow(fullTargetUrl);
       }
     })
   );

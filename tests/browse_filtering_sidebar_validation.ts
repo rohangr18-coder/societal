@@ -107,9 +107,9 @@ console.log('\n--- 3. Distance Radius Filtering ---');
 const userLat = 12.9716;
 const userLng = 77.5946;
 
-const distBase = calculateDistanceKm(userLat, userLng, baseDonation.latitude, baseDonation.longitude);
-const distProduce = calculateDistanceKm(userLat, userLng, produceDonation.latitude, produceDonation.longitude);
-const distFar = calculateDistanceKm(userLat, userLng, farDonation.latitude, farDonation.longitude);
+const distBase = calculateDistanceKm(userLat, userLng, baseDonation.latitude, baseDonation.longitude)!;
+const distProduce = calculateDistanceKm(userLat, userLng, produceDonation.latitude, produceDonation.longitude)!;
+const distFar = calculateDistanceKm(userLat, userLng, farDonation.latitude, farDonation.longitude)!;
 
 console.log(`Calculated distances: Base=${distBase.toFixed(2)}km, Produce=${distProduce.toFixed(2)}km, Far=${distFar.toFixed(2)}km`);
 
@@ -121,7 +121,7 @@ assert(distFar > 25, 'Far donation is > 25km radius');
 const filterWithinRadius = (don: Donation, radiusKm: DistanceRange) => {
   if (radiusKm === 'all') return true;
   const dist = calculateDistanceKm(userLat, userLng, don.latitude, don.longitude);
-  return dist <= radiusKm;
+  return dist !== null && dist <= radiusKm;
 };
 
 assert(filterWithinRadius(baseDonation, 5) === true, 'Base is within 5km');

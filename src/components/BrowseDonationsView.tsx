@@ -229,7 +229,7 @@ export const BrowseDonationsView: React.FC<BrowseDonationsViewProps> = ({
           d.latitude,
           d.longitude
         );
-        if (dist > distanceRadius) {
+        if (dist !== null && dist > distanceRadius) {
           return false;
         }
       }

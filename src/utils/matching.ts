@@ -265,7 +265,7 @@ export function calculateSmartMatches(
     const travelText = estimatedTravelMinutes !== null ? `~${estimatedTravelMinutes} min travel` : 'transit uncalculated';
     const summaryExplanation = isLocationMissing
       ? `${ngo.name} is registered but its facility coordinates are missing. Please update address to enable GPS dispatch.`
-      : `Recommended with ${Math.min(100, Math.max(0, score))}% match: Located ${distanceText} (${travelText} at 25 km/h), reported daily capacity of ${dailyCapacity} meals, ${
+      : `Recommended with ${Math.min(100, Math.max(0, score))}% match (recommended): Located ${distanceText} (${travelText} at 25 km/h), reported daily capacity of ${dailyCapacity} meals, ${
           refrigerationMatch ? 'cold-storage compatible' : 'ambient intake only'
         }, and ${deadlineMatch ? 'feasible transit within safety window' : 'transit window warning'}.`;
 

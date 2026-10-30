@@ -1,7 +1,7 @@
 import { getMessaging, getToken, onMessage, isSupported, Messaging } from 'firebase/messaging';
-import { app, db, handleFirestoreError, OperationType } from '../lib/firebase';
-import { doc, updateDoc } from 'firebase/firestore';
-import { VolunteerProfile, Donation } from '../types';
+import { app, db, auth, handleFirestoreError, OperationType } from '../lib/firebase';
+import { doc, updateDoc, arrayUnion } from 'firebase/firestore';
+import { VolunteerProfile, Donation, NotificationPreferences } from '../types';
 
 let messagingInstance: Messaging | null = null;
 let isMessagingSupportedPromise: Promise<boolean> | null = null;
@@ -20,6 +20,17 @@ export async function isFcmSupported(): Promise<boolean> {
     isMessagingSupportedPromise = isSupported().catch(() => false);
   }
   return isMessagingSupportedPromise;
+}
+
+/**
+ * Returns the VAPID Public Key configured in environment variables
+ */
+export function getVapidKey(): string | undefined {
+  const envKey = import.meta.env?.VITE_FIREBASE_VAPID_KEY;
+  if (typeof envKey === 'string' && envKey.trim().length > 0) {
+    return envKey.trim();
+  }
+  return undefined;
 }
 
 /**
@@ -42,7 +53,7 @@ export async function getMessagingInstance(): Promise<Messaging | null> {
 }
 
 /**
- * Registers the Firebase Cloud Messaging Service Worker
+ * Registers the Firebase Cloud Messaging Service Worker at root scope
  */
 export async function registerFcmServiceWorker(): Promise<ServiceWorkerRegistration | null> {
   if (typeof window === 'undefined' || !('serviceWorker' in navigator)) {
@@ -61,7 +72,7 @@ export async function registerFcmServiceWorker(): Promise<ServiceWorkerRegistrat
 }
 
 /**
- * Requests browser Notification permission
+ * Requests browser Notification permission ONLY after explicit user interaction
  */
 export async function requestNotificationPermission(): Promise<NotificationPermission> {
   if (typeof window === 'undefined' || !('Notification' in window)) {
@@ -80,7 +91,7 @@ export async function requestNotificationPermission(): Promise<NotificationPermi
 }
 
 /**
- * Retrieves the FCM Web Push registration token
+ * Retrieves the FCM Web Push registration token using VITE_FIREBASE_VAPID_KEY
  */
 export async function getFcmToken(swRegistration?: ServiceWorkerRegistration): Promise<string | null> {
   try {
@@ -92,8 +103,7 @@ export async function getFcmToken(swRegistration?: ServiceWorkerRegistration): P
       registration = (await registerFcmServiceWorker()) || undefined;
     }
 
-    // Default VAPID key from environment if specified
-    const vapidKey = import.meta.env?.VITE_FIREBASE_VAPID_KEY || undefined;
+    const vapidKey = getVapidKey();
 
     const token = await getToken(messaging, {
       serviceWorkerRegistration: registration,
@@ -104,26 +114,54 @@ export async function getFcmToken(swRegistration?: ServiceWorkerRegistration): P
       console.info('[FCM] Registration token generated successfully');
       return token;
     } else {
-      console.warn('[FCM] No registration token returned. Request permission first.');
+      console.warn('[FCM] No registration token returned. Ensure permission is granted and VAPID key is valid.');
       return null;
     }
-  } catch (err) {
-    console.warn('[FCM] Error retrieving FCM token:', err);
+  } catch (err: any) {
+    console.warn('[FCM] Error retrieving FCM token:', err?.message || err);
     return null;
   }
 }
 
 /**
- * Complete flow for volunteers to enable browser push notifications:
+ * Default notification preferences according to user role
+ */
+export function getDefaultPreferences(role?: string): NotificationPreferences {
+  return {
+    donorOnClaimed: true,
+    donorOnPickup: true,
+    donorOnDelivered: true,
+    volunteerNearby: true,
+    volunteerUrgent: true,
+    volunteerRouteUpdates: true,
+    adminNewDonations: role === 'admin',
+    adminUrgentEscalations: role === 'admin',
+    adminNgoRegistrations: role === 'admin',
+  };
+}
+
+/**
+ * User-initiated flow to enable browser push notifications:
  * 1. Request permission
  * 2. Register service worker
- * 3. Retrieve FCM registration token
- * 4. Save token to volunteer profile in Firestore
+ * 3. Retrieve FCM registration token using VITE_FIREBASE_VAPID_KEY
+ * 4. Save token to user profile (and volunteer profile if applicable) in Firestore
  */
-export async function enableVolunteerPushNotifications(
-  userId: string
+export async function enableUserPushNotifications(
+  userId: string,
+  role?: string,
+  preferences?: NotificationPreferences
 ): Promise<{ success: boolean; token?: string; permission: NotificationPermission; message: string }> {
   try {
+    const supported = await isFcmSupported();
+    if (!supported) {
+      return {
+        success: false,
+        permission: 'denied',
+        message: 'Browser push notifications are not supported in this browser environment.',
+      };
+    }
+
     const permission = await requestNotificationPermission();
     if (permission !== 'granted') {
       return {
@@ -131,34 +169,58 @@ export async function enableVolunteerPushNotifications(
         permission,
         message:
           permission === 'denied'
-            ? 'Browser notification permission was blocked. Please enable notifications in your browser site settings.'
+            ? 'Browser notification permission was blocked. Please click the padlock or tune icon in your address bar and change Notifications to "Allow".'
             : 'Notification permission was dismissed.',
       };
     }
 
     const swReg = await registerFcmServiceWorker();
     const token = await getFcmToken(swReg || undefined);
-
     const now = new Date().toISOString();
-    const path = `volunteerProfiles/${userId}`;
+    const effectivePrefs = preferences || getDefaultPreferences(role);
 
+    // Update user profile in Firestore
+    const userPath = `users/${userId}`;
     try {
-      await updateDoc(doc(db, 'volunteerProfiles', userId), {
+      await updateDoc(doc(db, 'users', userId), {
         pushNotificationsEnabled: true,
         pushNotificationPermission: 'granted',
-        ...(token ? { fcmToken: token } : {}),
+        ...(token ? { fcmToken: token, fcmTokens: arrayUnion(token) } : {}),
+        notificationPreferences: effectivePrefs,
         lastTokenUpdate: now,
         updatedAt: now,
       });
     } catch (dbErr) {
-      handleFirestoreError(dbErr, OperationType.UPDATE, path);
+      handleFirestoreError(dbErr, OperationType.UPDATE, userPath);
     }
+
+    // Also update volunteer profile if applicable
+    if (role === 'volunteer') {
+      const volPath = `volunteerProfiles/${userId}`;
+      try {
+        await updateDoc(doc(db, 'volunteerProfiles', userId), {
+          pushNotificationsEnabled: true,
+          pushNotificationPermission: 'granted',
+          ...(token ? { fcmToken: token } : {}),
+          notificationPreferences: effectivePrefs,
+          lastTokenUpdate: now,
+          updatedAt: now,
+        });
+      } catch (volErr) {
+        handleFirestoreError(volErr, OperationType.UPDATE, volPath);
+      }
+    }
+
+    const vapidKey = getVapidKey();
+    const vapidNotice = !vapidKey && !token
+      ? ' (Note: VITE_FIREBASE_VAPID_KEY is not configured; local in-tab notifications will work, configure VAPID in Firebase Console for full Web Push delivery).'
+      : '';
 
     return {
       success: true,
       token: token || undefined,
       permission: 'granted',
-      message: 'Browser push notifications successfully enabled! You will now receive instant alerts for nearby donations.',
+      message: `Browser push notifications successfully enabled!${vapidNotice}`,
     };
   } catch (err: any) {
     console.error('[FCM] Failed to enable push notifications:', err);
@@ -171,21 +233,45 @@ export async function enableVolunteerPushNotifications(
 }
 
 /**
- * Disable volunteer push notifications
+ * Backward-compatible helper for volunteer push notifications
  */
-export async function disableVolunteerPushNotifications(userId: string): Promise<boolean> {
-  const path = `volunteerProfiles/${userId}`;
+export async function enableVolunteerPushNotifications(
+  userId: string,
+  _radiusKm?: number,
+  preferences?: NotificationPreferences
+): Promise<{ success: boolean; token?: string; permission: NotificationPermission; message: string }> {
+  return enableUserPushNotifications(userId, 'volunteer', preferences);
+}
+
+/**
+ * Disable push notifications for a user
+ */
+export async function disableUserPushNotifications(userId: string, role?: string): Promise<boolean> {
+  const now = new Date().toISOString();
   try {
-    const now = new Date().toISOString();
-    await updateDoc(doc(db, 'volunteerProfiles', userId), {
+    await updateDoc(doc(db, 'users', userId), {
       pushNotificationsEnabled: false,
       updatedAt: now,
     });
+
+    if (role === 'volunteer') {
+      await updateDoc(doc(db, 'volunteerProfiles', userId), {
+        pushNotificationsEnabled: false,
+        updatedAt: now,
+      });
+    }
     return true;
   } catch (err) {
-    handleFirestoreError(err, OperationType.UPDATE, path);
+    handleFirestoreError(err, OperationType.UPDATE, `users/${userId}`);
     return false;
   }
+}
+
+/**
+ * Backward-compatible disable helper
+ */
+export async function disableVolunteerPushNotifications(userId: string): Promise<boolean> {
+  return disableUserPushNotifications(userId, 'volunteer');
 }
 
 /**
@@ -202,33 +288,31 @@ export function subscribeForegroundFcm(
     unsubscribe = onMessage(messaging, (payload) => {
       console.log('[FCM Foreground] Message received:', payload);
 
-      const title = payload.notification?.title || payload.data?.title || '🚨 Food Rescue Alert!';
-      const body = payload.notification?.body || payload.data?.body || 'New surplus food collection available nearby.';
+      const title = payload.notification?.title || payload.data?.title || '🚨 ResQBite Notification';
+      const body = payload.notification?.body || payload.data?.body || 'New surplus food activity in ResQBite.';
       const donationId = payload.data?.donationId;
       const distanceKm = payload.data?.distanceKm ? Number(payload.data.distanceKm) : undefined;
+      const clickUrl = payload.data?.url || (donationId ? `/volunteer?donationId=${donationId}` : '/');
 
-      // If browser permission is granted, display a native notification popup
+      // Native browser notification for foreground alert
       if (typeof window !== 'undefined' && 'Notification' in window && Notification.permission === 'granted') {
         try {
           const nativeNotif = new Notification(title, {
             body,
             icon: '/favicon.ico',
-            tag: donationId ? `resqbite-donation-${donationId}` : 'resqbite-alert',
-            data: {
-              url: '/volunteer',
-              donationId,
-            },
+            tag: donationId ? `resqbite-donation-${donationId}` : `resqbite-alert-${Date.now()}`,
+            data: { url: clickUrl, donationId },
           });
 
           nativeNotif.onclick = () => {
             window.focus();
-            if (window.location.pathname !== '/volunteer') {
-              window.location.href = '/volunteer';
+            if (clickUrl && window.location.pathname !== clickUrl) {
+              window.location.href = clickUrl;
             }
             nativeNotif.close();
           };
         } catch (e) {
-          console.warn('[FCM] Could not create native notification popup:', e);
+          console.warn('[FCM] Could not create foreground notification popup:', e);
         }
       }
 
@@ -250,11 +334,12 @@ export function subscribeForegroundFcm(
 }
 
 /**
- * Triggers an immediate browser test push notification on the user's current device
+ * Dispatches a test push notification through backend Firebase Admin SDK
  */
 export async function sendTestBrowserPushNotification(
   customTitle?: string,
-  customBody?: string
+  customBody?: string,
+  fcmToken?: string
 ): Promise<{ success: boolean; message: string }> {
   if (typeof window === 'undefined' || !('Notification' in window)) {
     return { success: false, message: 'Browser notifications are not supported by this browser.' };
@@ -264,17 +349,43 @@ export async function sendTestBrowserPushNotification(
   if (permission !== 'granted') {
     return {
       success: false,
-      message: 'Notification permission not granted. Please allow notifications in your browser.',
+      message: 'Notification permission not granted. Please click "Enable Notifications" first.',
     };
   }
 
   const title = customTitle || '🚨 ResQBite Test Push Notification';
   const body =
     customBody ||
-    'Firebase Cloud Messaging test successful! You are configured to receive instant alerts when surplus food is posted near you.';
+    'Firebase Cloud Messaging test successful! You are configured to receive instant alerts for surplus food rescues.';
 
+  // 1. Trigger backend FCM dispatch via Firebase Admin
   try {
-    // If Service Worker registration is active, prefer showNotification for system-level appearance
+    const user = auth.currentUser;
+    const idToken = user ? await user.getIdToken().catch(() => null) : null;
+
+    const response = await fetch('/api/notifications/test-push', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(idToken ? { Authorization: `Bearer ${idToken}` } : {}),
+      },
+      body: JSON.stringify({
+        token: fcmToken,
+        title,
+        body,
+      }),
+    });
+
+    if (response.ok) {
+      const data = await response.json();
+      console.info('[FCM Test] Backend dispatch result:', data);
+    }
+  } catch (backendErr) {
+    console.warn('[FCM Test] Backend test dispatch warning:', backendErr);
+  }
+
+  // 2. Trigger native display via Service Worker or Notification API
+  try {
     if ('serviceWorker' in navigator) {
       const reg = await navigator.serviceWorker.getRegistration();
       if (reg) {
@@ -284,13 +395,12 @@ export async function sendTestBrowserPushNotification(
           badge: '/favicon.ico',
           vibrate: [200, 100, 200],
           tag: 'resqbite-test-push',
-          data: { url: '/volunteer' },
+          data: { url: '/settings' },
         } as any);
-        return { success: true, message: 'Test notification triggered via Service Worker!' };
+        return { success: true, message: 'Test push notification delivered via Service Worker!' };
       }
     }
 
-    // Direct Notification API fallback
     const notif = new Notification(title, {
       body,
       icon: '/favicon.ico',
@@ -321,7 +431,7 @@ export async function dispatchFcmToNearbyVolunteers(
   let sentCount = 0;
   let errors = 0;
 
-  // Extract volunteers who have enabled push notifications or have an FCM token
+  // Filter volunteers who have enabled push notifications or opt-in
   const eligiblePushRecipients = volunteers.filter(
     (item) => item.volunteer.pushNotificationsEnabled || item.volunteer.fcmToken || item.volunteer.optInNotifications
   );
@@ -330,9 +440,10 @@ export async function dispatchFcmToNearbyVolunteers(
     return { sentCount: 0, errors: 0 };
   }
 
-  const tokens = eligiblePushRecipients
+  const rawTokens = eligiblePushRecipients
     .map((item) => item.volunteer.fcmToken)
     .filter((tok): tok is string => Boolean(tok));
+  const tokens = Array.from(new Set(rawTokens));
 
   const volunteerIds = eligiblePushRecipients.map((item) => item.volunteer.userId);
 
@@ -351,10 +462,15 @@ export async function dispatchFcmToNearbyVolunteers(
   };
 
   try {
-    // Send to backend FCM endpoint
+    const user = auth.currentUser;
+    const idToken = user ? await user.getIdToken().catch(() => null) : null;
+
     const response = await fetch('/api/notifications/fcm-send', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        ...(idToken ? { Authorization: `Bearer ${idToken}` } : {}),
+      },
       body: JSON.stringify(payload),
     });
 
@@ -369,7 +485,7 @@ export async function dispatchFcmToNearbyVolunteers(
     errors++;
   }
 
-  // Also trigger local notification if the current authenticated user is one of the eligible nearby volunteers
+  // Also trigger local notification if the current user is an eligible nearby volunteer
   try {
     if (typeof window !== 'undefined' && 'Notification' in window && Notification.permission === 'granted') {
       const reg = 'serviceWorker' in navigator ? await navigator.serviceWorker.getRegistration() : null;
@@ -394,4 +510,87 @@ export async function dispatchFcmToNearbyVolunteers(
   }
 
   return { sentCount, errors };
+}
+
+/**
+ * Dispatches push notifications for donation lifecycle events:
+ * - 'requested': NGO claimed food -> alerts donor
+ * - 'accepted': volunteer courier accepted -> alerts donor & NGO
+ * - 'picked_up': courier collected food -> alerts donor & NGO
+ * - 'delivered': delivery confirmed at shelter -> alerts donor, volunteer & admin
+ */
+export async function dispatchDonationLifecyclePush(
+  donation: Donation,
+  eventType: 'requested' | 'accepted' | 'picked_up' | 'delivered',
+  options?: {
+    actorName?: string;
+    note?: string;
+    recipientTokens?: string[];
+    recipientUserIds?: string[];
+  }
+): Promise<{ success: boolean; sentCount: number }> {
+  const actorName = options?.actorName || 'A network participant';
+  let title = 'Donation Update';
+  let body = `Status changed for "${donation.foodName}"`;
+  let url = `/dashboard`;
+
+  switch (eventType) {
+    case 'requested':
+      title = 'Shelter Requested Your Donation';
+      body = `${actorName} requested "${donation.foodName}". Please confirm handover.`;
+      url = `/dashboard`;
+      break;
+    case 'accepted':
+      title = 'Volunteer Accepted Collection';
+      body = `${actorName} is scheduled to pick up "${donation.foodName}".`;
+      url = `/dashboard`;
+      break;
+    case 'picked_up':
+      title = 'Food Collected & En Route';
+      body = `${actorName} has collected "${donation.foodName}" from donor.`;
+      url = `/dashboard`;
+      break;
+    case 'delivered':
+      title = '🎉 Donation Successfully Delivered';
+      body = `"${donation.foodName}" (${donation.quantity} ${donation.unit}) has been safely delivered to shelter.`;
+      url = `/impact`;
+      break;
+  }
+
+  const rawTokens = options?.recipientTokens || [];
+  const tokens = Array.from(new Set(rawTokens.filter(Boolean)));
+  const recipientUserIds = options?.recipientUserIds || [];
+
+  const payload = {
+    title,
+    body,
+    donationId: donation.id,
+    tokens,
+    volunteerIds: recipientUserIds,
+    url,
+    pickupDeadline: donation.collectionDeadline || donation.pickupDeadline,
+  };
+
+  try {
+    const user = auth.currentUser;
+    const idToken = user ? await user.getIdToken().catch(() => null) : null;
+
+    const response = await fetch('/api/notifications/fcm-send', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(idToken ? { Authorization: `Bearer ${idToken}` } : {}),
+      },
+      body: JSON.stringify(payload),
+    });
+
+    if (response.ok) {
+      const res = await response.json();
+      return { success: true, sentCount: res.sentCount || 1 };
+    }
+  } catch (err) {
+    console.warn('[FCM Lifecycle] Push notification error:', err);
+  }
+
+  return { success: false, sentCount: 0 };
 }

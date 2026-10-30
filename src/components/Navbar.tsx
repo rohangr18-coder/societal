@@ -4,6 +4,7 @@ import {
   Menu,
   X,
   Bell,
+  BellRing,
   MapPin,
   PlusCircle,
   BarChart3,
@@ -284,6 +285,31 @@ export const Navbar: React.FC<NavbarProps> = ({
                       <div className="px-4 py-2 border-b border-stone-100 flex items-center justify-between">
                         <span className="text-sm font-semibold text-stone-800">Notifications</span>
                         <span className="text-xs text-stone-500">{notifications.length} updates</span>
+                      </div>
+
+                      {/* Push Notification Quick Status Banner */}
+                      <div className="px-3 py-2 bg-stone-50 border-b border-stone-100 flex items-center justify-between text-[11px]">
+                        {userProfile?.pushNotificationsEnabled ? (
+                          <span className="text-emerald-700 font-semibold flex items-center gap-1.5">
+                            <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+                            Browser Push Active
+                          </span>
+                        ) : (
+                          <span className="text-stone-500 flex items-center gap-1.5">
+                            <BellRing className="w-3.5 h-3.5 text-stone-400" />
+                            Push Alerts Disabled
+                          </span>
+                        )}
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setNotifDropdownOpen(false);
+                            handleNav('settings');
+                          }}
+                          className="font-bold text-emerald-700 hover:text-emerald-800 hover:underline cursor-pointer"
+                        >
+                          {userProfile?.pushNotificationsEnabled ? 'Preferences' : 'Enable'}
+                        </button>
                       </div>
                       <div className="max-h-72 overflow-y-auto divide-y divide-stone-50">
                         {notifications.length === 0 ? (

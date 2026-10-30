@@ -31,7 +31,7 @@ import {
   LiveTrackingSession,
 } from '../types';
 import { calculateDistanceKm } from '../utils/geo';
-import { dispatchFcmToNearbyVolunteers } from './fcmService';
+import { dispatchFcmToNearbyVolunteers, dispatchDonationLifecyclePush } from './fcmService';
 
 // ----------------------------------------------------
 // User & Auth Profile Service
@@ -346,7 +346,7 @@ export async function claimDonationByNgo(
   const path = `donations/${donationId}`;
 
   try {
-    return await runTransaction(db, async (transaction) => {
+    const result = await runTransaction(db, async (transaction) => {
       const snap = await transaction.get(donationRef);
       if (!snap.exists()) {
         return {
@@ -399,8 +399,38 @@ export async function claimDonationByNgo(
         success: true,
         code: 'SUCCESS' as const,
         message: 'Donation successfully claimed and locked for your organization!',
+        donation,
       };
     });
+
+    if (result.success && result.donation?.donorId) {
+      sendNotification({
+        id: `notif_donor_req_${donationId}`,
+        userId: result.donation.donorId,
+        recipientUserId: result.donation.donorId,
+        title: 'Shelter Requested Your Donation',
+        message: `${ngoName} has requested your food donation "${result.donation.foodName}".`,
+        type: 'request',
+        link: '/dashboard',
+        donationId,
+      }).catch(console.warn);
+
+      getDoc(doc(db, 'users', result.donation.donorId)).then((donorSnap) => {
+        if (donorSnap.exists()) {
+          const donorData = donorSnap.data() as UserProfile;
+          if (donorData.pushNotificationsEnabled && donorData.notificationPreferences?.donorOnClaimed !== false) {
+            const tokens = donorData.fcmTokens || (donorData.fcmToken ? [donorData.fcmToken] : []);
+            dispatchDonationLifecyclePush(result.donation!, 'requested', {
+              actorName: ngoName,
+              recipientTokens: tokens,
+              recipientUserIds: [result.donation!.donorId],
+            }).catch(console.warn);
+          }
+        }
+      }).catch(console.warn);
+    }
+
+    return result;
   } catch (error: any) {
     handleFirestoreError(error, OperationType.UPDATE, path);
     return {
@@ -543,6 +573,20 @@ export async function acceptDonationByVolunteer(
           donationId: result.donation.id,
           deliveryStatus: 'delivered',
         }).catch(console.warn);
+
+        getDoc(doc(db, 'users', result.donation.donorId)).then((donorSnap) => {
+          if (donorSnap.exists()) {
+            const donorData = donorSnap.data() as UserProfile;
+            if (donorData.pushNotificationsEnabled && donorData.notificationPreferences?.donorOnPickup !== false) {
+              const tokens = donorData.fcmTokens || (donorData.fcmToken ? [donorData.fcmToken] : []);
+              dispatchDonationLifecyclePush(result.donation!, 'accepted', {
+                actorName: volunteerName,
+                recipientTokens: tokens,
+                recipientUserIds: [result.donation!.donorId],
+              }).catch(console.warn);
+            }
+          }
+        }).catch(console.warn);
       }
 
       if (result.donation.assignedNgoId) {
@@ -678,7 +722,7 @@ export async function transitionCollectionStatus(
   const path = `donations/${donationId}`;
 
   try {
-    return await runTransaction(db, async (tx) => {
+    const result = await runTransaction(db, async (tx) => {
       const snap = await tx.get(donationRef);
       if (!snap.exists()) {
         return { success: false, message: 'Donation not found' };
@@ -761,8 +805,44 @@ export async function transitionCollectionStatus(
       return {
         success: true,
         message: `Status transitioned to ${nextStatus.replace('_', ' ').toUpperCase()}`,
+        donation,
       };
     });
+
+    if (result.success && result.donation) {
+      const don = result.donation;
+      if (nextStatus === 'picked_up' && don.donorId) {
+        getDoc(doc(db, 'users', don.donorId)).then((snap) => {
+          if (snap.exists()) {
+            const u = snap.data() as UserProfile;
+            if (u?.pushNotificationsEnabled && u?.notificationPreferences?.donorOnPickup !== false) {
+              const tokens = u.fcmTokens || (u.fcmToken ? [u.fcmToken] : []);
+              dispatchDonationLifecyclePush(don, 'picked_up', {
+                actorName,
+                recipientTokens: tokens,
+                recipientUserIds: [don.donorId],
+              }).catch(console.warn);
+            }
+          }
+        }).catch(console.warn);
+      } else if ((nextStatus === 'delivered' || nextStatus === 'completed') && don.donorId) {
+        getDoc(doc(db, 'users', don.donorId)).then((snap) => {
+          if (snap.exists()) {
+            const u = snap.data() as UserProfile;
+            if (u?.pushNotificationsEnabled && u?.notificationPreferences?.donorOnDelivered !== false) {
+              const tokens = u.fcmTokens || (u.fcmToken ? [u.fcmToken] : []);
+              dispatchDonationLifecyclePush(don, 'delivered', {
+                actorName,
+                recipientTokens: tokens,
+                recipientUserIds: [don.donorId],
+              }).catch(console.warn);
+            }
+          }
+        }).catch(console.warn);
+      }
+    }
+
+    return result;
   } catch (error) {
     handleFirestoreError(error, OperationType.WRITE, path);
     return { success: false, message: 'Error updating collection status.' };

@@ -45,7 +45,7 @@ import {
   saveVolunteerProfile,
   subscribeNotifications,
 } from '../services/dbService';
-import { calculateDistanceKm } from '../utils/geo';
+import { calculateDistanceKm, calculateDistanceKmSafe } from '../utils/geo';
 import { LiveTrackingMap } from './LiveTrackingMap';
 import { VolunteerNotificationsSlideOver } from './VolunteerNotificationsSlideOver';
 import { VolunteerClusterMap } from './VolunteerClusterMap';
@@ -498,7 +498,7 @@ export const VolunteerView: React.FC<VolunteerViewProps> = ({
     .map((d) => {
       const dist =
         d.latitude && d.longitude
-          ? calculateDistanceKm(volLat, volLng, d.latitude, d.longitude)
+          ? calculateDistanceKmSafe(volLat, volLng, d.latitude, d.longitude, 0)
           : 0;
       return { ...d, distanceKm: dist };
     })

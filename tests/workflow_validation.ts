@@ -28,7 +28,7 @@ function runTests() {
   // TEST 1: Distance calculation (Haversine)
   console.log('--- Test Suite 1: Geographic Proximity & Distance ---');
   // Distance between Connaught Place (28.6315, 77.2167) and India Gate (28.6129, 77.2295) is ~2.4 km
-  const dist = calculateDistanceKm(28.6315, 77.2167, 28.6129, 77.2295);
+  const dist = calculateDistanceKm(28.6315, 77.2167, 28.6129, 77.2295)!;
   assert(dist > 2.0 && dist < 2.8, `Haversine distance calculated accurately (${dist} km, expected ~2.4 km)`);
 
   // Same coordinates should yield 0 km

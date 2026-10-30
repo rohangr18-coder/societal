@@ -122,7 +122,7 @@ export function clusterDonations(
         other.latitude,
         other.longitude
       );
-      if (dist <= clusterRadiusKm) {
+      if (dist !== null && dist <= clusterRadiusKm) {
         clusterMembers.push(other);
         visited.add(other.id);
       }
@@ -144,7 +144,8 @@ export function clusterDonations(
 
     let minDistanceKm: number | undefined;
     if (typeof userLat === 'number' && typeof userLng === 'number') {
-      minDistanceKm = calculateDistanceKm(userLat, userLng, avgLat, avgLng);
+      const dist = calculateDistanceKm(userLat, userLng, avgLat, avgLng);
+      minDistanceKm = dist !== null ? dist : undefined;
     }
 
     clusters.push({

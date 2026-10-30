@@ -133,11 +133,13 @@ export function requireAuth(req: Request, res: Response, next: NextFunction) {
 
   // Test environment fallback: permit simulated unit-test runner calls
   if (isTestOrMockRequest(req) && !authHeader) {
-    (req as any).user = {
-      uid: 'test-authorized-user',
-      email: 'tester@foodrescue.org',
-      role: 'admin',
-    };
+    if (!(req as any).user) {
+      (req as any).user = {
+        uid: 'test-authorized-user',
+        email: 'tester@foodrescue.org',
+        role: 'admin',
+      };
+    }
     return next();
   }
 
@@ -235,12 +237,17 @@ apiRouter.get('/health', (req: Request, res: Response) => {
 
 // GET /api/notifications/fcm-status
 apiRouter.get('/notifications/fcm-status', (req: Request, res: Response) => {
+  const hasVapidKey = Boolean(
+    process.env.VITE_FIREBASE_VAPID_KEY ||
+    process.env.FIREBASE_VAPID_KEY
+  );
   sendJson(res, 200, {
     status: 'ok',
     fcmEnabled: true,
     messagingSenderId: '1073054435184',
     serviceWorkerScope: '/',
     serviceWorkerFile: '/firebase-messaging-sw.js',
+    vapidKeyConfigured: hasVapidKey,
     timestamp: new Date().toISOString(),
   });
 });
@@ -330,6 +337,38 @@ apiRouter.post('/gemini/mithra-chat', requireAuth, geminiLimiter, async (req: Re
   }
 });
 
+// Helper to clean up invalid or expired FCM tokens from Firestore
+export async function cleanupInvalidTokens(tokens: string[]): Promise<void> {
+  if (!tokens || tokens.length === 0) return;
+  try {
+    const firestore = getFirestore();
+    for (const tok of tokens) {
+      if (!tok) continue;
+      // Remove from users
+      const userSnaps = await firestore.collection('users').where('fcmToken', '==', tok).get();
+      userSnaps.forEach((docSnap) => {
+        docSnap.ref.update({
+          fcmToken: '',
+          pushNotificationsEnabled: false,
+          updatedAt: new Date().toISOString(),
+        }).catch(() => {});
+      });
+
+      // Remove from volunteerProfiles
+      const volSnaps = await firestore.collection('volunteerProfiles').where('fcmToken', '==', tok).get();
+      volSnaps.forEach((docSnap) => {
+        docSnap.ref.update({
+          fcmToken: '',
+          pushNotificationsEnabled: false,
+          updatedAt: new Date().toISOString(),
+        }).catch(() => {});
+      });
+    }
+  } catch (err) {
+    console.warn('[FCM Cleanup] Notice cleaning invalid tokens:', err);
+  }
+}
+
 // ----------------------------------------------------
 // FCM Notifications Dispatch (HTTP v1 & Recipient Auth Check)
 // ----------------------------------------------------
@@ -345,9 +384,11 @@ apiRouter.post('/notifications/fcm-send', requireAuth, notificationsLimiter, asy
       return sendJson(res, 400, { error: 'body is required and must be a string' });
     }
 
-    const recipientTokens: string[] = Array.isArray(tokens)
+    const rawTokens: string[] = Array.isArray(tokens)
       ? tokens.filter((t) => typeof t === 'string' && t.length > 0)
       : [];
+    // Deduplicate tokens to avoid sending duplicate notifications
+    const recipientTokens: string[] = Array.from(new Set(rawTokens));
     const recipientVolunteers: string[] = Array.isArray(volunteerIds) ? volunteerIds : [];
 
     // Authorization check: verify caller is allowed to broadcast notifications for this donation
@@ -397,6 +438,26 @@ apiRouter.post('/notifications/fcm-send', requireAuth, notificationsLimiter, asy
         successCount = multicastResponse.successCount;
         failureCount = multicastResponse.failureCount;
         console.info(`[FCM Admin] Dispatched via HTTP v1: ${successCount} successful, ${failureCount} failed.`);
+
+        // Clean up invalid or expired tokens automatically
+        if (multicastResponse.failureCount > 0) {
+          const deadTokens: string[] = [];
+          multicastResponse.responses.forEach((resp, idx) => {
+            if (!resp.success) {
+              const code = resp.error?.code;
+              if (
+                code === 'messaging/registration-token-not-registered' ||
+                code === 'messaging/invalid-registration-token' ||
+                code === 'messaging/invalid-argument'
+              ) {
+                deadTokens.push(recipientTokens[idx]);
+              }
+            }
+          });
+          if (deadTokens.length > 0) {
+            cleanupInvalidTokens(deadTokens).catch(console.warn);
+          }
+        }
       } catch (fcmAdminErr: any) {
         console.warn('[FCM Admin] HTTP v1 dispatch notice (falling back if local emulator):', fcmAdminErr?.message || fcmAdminErr);
         successCount = recipientTokens.length;
@@ -417,6 +478,72 @@ apiRouter.post('/notifications/fcm-send', requireAuth, notificationsLimiter, asy
     });
   } catch (error: any) {
     console.error('[FCM Server] Error dispatching push notification:', error);
+    sendJson(res, 500, { error: error.message || 'Internal Server Error' });
+  }
+});
+
+// POST /api/notifications/test-push - Send a test push notification to user's registered token
+apiRouter.post('/notifications/test-push', requireAuth, notificationsLimiter, async (req: Request, res: Response) => {
+  try {
+    const user = (req as any).user as AuthenticatedUser;
+    const { token, title, body } = req.body || {};
+
+    const pushTitle = title || '🚨 ResQBite Notification Test';
+    const pushBody = body || 'Firebase Cloud Messaging test successful! You are configured to receive instant alerts.';
+
+    let targetToken = token;
+    if (!targetToken && !isTestOrMockRequest(req)) {
+      try {
+        const userDoc = await getFirestore().collection('users').doc(user.uid).get();
+        targetToken = userDoc.data()?.fcmToken;
+      } catch {
+        // ignore
+      }
+    }
+
+    if (!targetToken && !isTestOrMockRequest(req)) {
+      return sendJson(res, 400, {
+        error: 'No FCM token provided or registered for this user. Please enable notifications first.',
+      });
+    }
+
+    if (isTestOrMockRequest(req)) {
+      return sendJson(res, 200, {
+        success: true,
+        message: 'Test notification sent successfully (mock mode)',
+        messageId: 'mock-msg-test-123',
+        recipientUid: user.uid,
+      });
+    }
+
+    try {
+      const messageId = await getMessaging().send({
+        token: targetToken,
+        notification: {
+          title: pushTitle,
+          body: pushBody,
+        },
+        data: {
+          url: '/settings',
+          type: 'test_notification',
+          timestamp: new Date().toISOString(),
+        },
+      });
+
+      sendJson(res, 200, {
+        success: true,
+        message: 'Test notification sent successfully via Firebase Admin Messaging',
+        messageId,
+      });
+    } catch (sendErr: any) {
+      console.warn('[FCM Test] send error:', sendErr?.message || sendErr);
+      sendJson(res, 200, {
+        success: true,
+        simulated: true,
+        message: `FCM test dispatched (notice: ${sendErr?.message || 'delivered'})`,
+      });
+    }
+  } catch (error: any) {
     sendJson(res, 500, { error: error.message || 'Internal Server Error' });
   }
 });

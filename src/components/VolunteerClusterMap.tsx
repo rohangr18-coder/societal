@@ -27,7 +27,7 @@ import {
   Bike,
 } from 'lucide-react';
 import { Donation } from '../types';
-import { calculateDistanceKm } from '../utils/geo';
+import { calculateDistanceKm, calculateDistanceKmSafe } from '../utils/geo';
 import {
   clusterDonations,
   getPickupWindowInfo,
@@ -124,7 +124,7 @@ export const VolunteerClusterMap: React.FC<VolunteerClusterMapProps> = ({
           d.latitude,
           d.longitude
         );
-        if (dist > selectedProximity) return false;
+        if (dist !== null && dist > selectedProximity) return false;
       }
 
       return true;
@@ -541,11 +541,12 @@ export const VolunteerClusterMap: React.FC<VolunteerClusterMapProps> = ({
                         <Compass className="w-3 h-3" />
                         <span>
                           ~
-                          {calculateDistanceKm(
+                          {calculateDistanceKmSafe(
                             currentVolunteerLat,
                             currentVolunteerLng,
                             selectedSingleDonation.latitude,
-                            selectedSingleDonation.longitude
+                            selectedSingleDonation.longitude,
+                            0
                           ).toFixed(1)}{' '}
                           km from your location
                         </span>
@@ -656,7 +657,7 @@ export const VolunteerClusterMap: React.FC<VolunteerClusterMapProps> = ({
                     <div className="text-[11px] text-stone-500 flex flex-wrap items-center gap-2">
                       <span>Volume: {donation.quantity} {donation.unit}</span>
                       <span>•</span>
-                      <span>📍 {dist.toFixed(1)} km away ({donation.pickupAddress})</span>
+                      <span>📍 {dist !== null ? `${dist.toFixed(1)} km away` : 'location unconfirmed'} ({donation.pickupAddress})</span>
                     </div>
                   </div>
 

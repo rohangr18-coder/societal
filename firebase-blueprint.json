@@ -11,6 +11,10 @@
         "role": { "type": "string", "enum": ["donor", "ngo", "volunteer", "admin"] },
         "phoneNumber": { "type": "string", "maxLength": 32 },
         "organizationId": { "type": "string", "maxLength": 128 },
+        "fcmToken": { "type": "string", "maxLength": 512 },
+        "pushNotificationsEnabled": { "type": "boolean" },
+        "pushNotificationPermission": { "type": "string", "enum": ["default", "granted", "denied"] },
+        "notificationRadiusKm": { "type": "number" },
         "createdAt": { "type": "string" },
         "updatedAt": { "type": "string" }
       },

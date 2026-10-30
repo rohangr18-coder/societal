@@ -301,9 +301,9 @@ export const LiveTrackingMap: React.FC<LiveTrackingMapProps> = ({
     donation.status === 'picked_up' || donation.status === 'in_transit' ? ngoLng : donorLng;
 
   const distanceKm =
-    currentCourierLat && currentCourierLng
+    (currentCourierLat && currentCourierLng
       ? calculateDistanceKm(currentCourierLat, currentCourierLng, targetLat, targetLng)
-      : calculateDistanceKm(donorLat, donorLng, ngoLat, ngoLng);
+      : calculateDistanceKm(donorLat, donorLng, ngoLat, ngoLng)) ?? 0;
 
   // Estimate ETA assuming average city speed of 22 km/h
   const etaMinutes = Math.max(3, Math.round((distanceKm / 22) * 60));

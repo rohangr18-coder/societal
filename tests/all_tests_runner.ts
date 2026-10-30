@@ -40,6 +40,7 @@ async function main() {
 
   const durationSec = ((Date.now() - startTime) / 1000).toFixed(2);
   console.log(`\n🎉 ALL ${testFiles.length} TEST SUITES PASSED SUCCESSFULLY in ${durationSec}s!`);
+  process.exit(0);
 }
 
 main().catch((err) => {
