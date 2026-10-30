@@ -317,7 +317,7 @@ export const GoogleRescueMap: React.FC<GoogleRescueMapProps> = ({
             gestureHandling="greedy"
             disableDefaultUI={false}
             onClick={handleMapClick}
-            internalUsageAttributionIds={['gmp_git_agentskills_v1']}
+            internalUsageAttributionIds={['gmp_mcp_codeassist_v1_aistudio']}
             style={{ width: '100%', height: '100%' }}
           >
             <MapController targetCenter={activeCenter} targetZoom={activeZoom} />

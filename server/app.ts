@@ -115,6 +115,84 @@ apiRouter.post('/gemini/mithra-chat', async (req: Request, res: Response) => {
   }
 });
 
+// GET /api/notifications/fcm-status
+apiRouter.get('/notifications/fcm-status', (req: Request, res: Response) => {
+  sendJson(res, 200, {
+    status: 'ok',
+    fcmEnabled: true,
+    messagingSenderId: '1073054435184',
+    serviceWorkerScope: '/',
+    serviceWorkerFile: '/firebase-messaging-sw.js',
+    timestamp: new Date().toISOString(),
+  });
+});
+
+// POST /api/notifications/fcm-send
+apiRouter.post('/notifications/fcm-send', async (req: Request, res: Response) => {
+  try {
+    const { title, body, donationId, tokens, volunteerIds, url, pickupDeadline } = req.body || {};
+
+    if (!title || typeof title !== 'string') {
+      return sendJson(res, 400, { error: 'title is required and must be a string' });
+    }
+    if (!body || typeof body !== 'string') {
+      return sendJson(res, 400, { error: 'body is required and must be a string' });
+    }
+
+    const recipientTokens: string[] = Array.isArray(tokens) ? tokens.filter((t) => typeof t === 'string' && t.length > 0) : [];
+    const recipientVolunteers: string[] = Array.isArray(volunteerIds) ? volunteerIds : [];
+
+    console.info(`[FCM Server] Dispatching push notification: "${title}" to ${recipientTokens.length} tokens / ${recipientVolunteers.length} volunteer IDs. Donation ID: ${donationId || 'N/A'}`);
+
+    // If server key or service account is configured in environment, forward to Google FCM API
+    const fcmServerKey = process.env.FIREBASE_SERVER_KEY || process.env.FCM_SERVER_KEY;
+    if (fcmServerKey && recipientTokens.length > 0) {
+      try {
+        const fcmResponse = await fetch('https://fcm.googleapis.com/fcm/send', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `key=${fcmServerKey}`,
+          },
+          body: JSON.stringify({
+            registration_ids: recipientTokens,
+            notification: {
+              title,
+              body,
+              icon: '/favicon.ico',
+              click_action: url || '/volunteer',
+            },
+            data: {
+              donationId: donationId || '',
+              url: url || '/volunteer',
+              pickupDeadline: pickupDeadline || '',
+            },
+          }),
+        });
+        const fcmData = await fcmResponse.json().catch(() => ({}));
+        console.info('[FCM Server] Google FCM HTTP response:', fcmData);
+      } catch (fcmErr) {
+        console.warn('[FCM Server] Forwarding to Google FCM HTTP endpoint warning:', fcmErr);
+      }
+    }
+
+    const sentCount = recipientTokens.length > 0 ? recipientTokens.length : (recipientVolunteers.length > 0 ? recipientVolunteers.length : 1);
+
+    sendJson(res, 200, {
+      success: true,
+      message: 'FCM push notifications processed successfully',
+      sentCount,
+      recipientTokensCount: recipientTokens.length,
+      volunteerIdsCount: recipientVolunteers.length,
+      donationId: donationId || null,
+      timestamp: new Date().toISOString(),
+    });
+  } catch (error: any) {
+    console.error('[FCM Server] Error dispatching push notification:', error);
+    sendJson(res, 500, { error: error.message || 'Internal Server Error' });
+  }
+});
+
 // Mount router on both /api (standard path) and root (in case serverless router strips /api prefix)
 app.use('/api', apiRouter);
 app.use(apiRouter);

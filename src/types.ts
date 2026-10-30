@@ -112,6 +112,12 @@ export interface VolunteerProfile {
   notificationRadiusKm?: number; // Configurable radius in km, default 10 km
   optInNotifications?: boolean;
   emergencyContact?: string;
+  // Firebase Cloud Messaging (FCM) Browser Push Notifications
+  fcmToken?: string;
+  fcmTokens?: string[];
+  pushNotificationsEnabled?: boolean;
+  pushNotificationPermission?: 'default' | 'granted' | 'denied';
+  lastTokenUpdate?: string;
   createdAt: string;
   updatedAt: string;
 }

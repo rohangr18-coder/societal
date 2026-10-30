@@ -20,12 +20,19 @@ import {
   RotateCcw,
   Sliders,
   Bell,
+  BellRing,
+  Send,
+  Copy,
+  Check,
   UserCheck,
   Loader2,
   Award,
   PackageCheck,
   AlertTriangle,
   ExternalLink,
+  LayoutGrid,
+  Map as MapIcon,
+  Layers,
 } from 'lucide-react';
 import { Donation, VolunteerProfile, DonationStatus } from '../types';
 import { useAuth } from '../context/AuthContext';
@@ -36,9 +43,19 @@ import {
   transitionCollectionStatus,
   getVolunteerProfile,
   saveVolunteerProfile,
+  subscribeNotifications,
 } from '../services/dbService';
 import { calculateDistanceKm } from '../utils/geo';
 import { LiveTrackingMap } from './LiveTrackingMap';
+import { VolunteerNotificationsSlideOver } from './VolunteerNotificationsSlideOver';
+import { VolunteerClusterMap } from './VolunteerClusterMap';
+import {
+  isFcmSupported,
+  enableVolunteerPushNotifications,
+  disableVolunteerPushNotifications,
+  sendTestBrowserPushNotification,
+  subscribeForegroundFcm,
+} from '../services/fcmService';
 
 interface VolunteerViewProps {
   donations: Donation[];
@@ -76,8 +93,63 @@ export const VolunteerView: React.FC<VolunteerViewProps> = ({
   const [gpsDetecting, setGpsDetecting] = useState(false);
   const [savingSettings, setSavingSettings] = useState(false);
 
+  // Firebase Cloud Messaging (FCM) state
+  const [fcmSupported, setFcmSupported] = useState(false);
+  const [fcmEnabled, setFcmEnabled] = useState(false);
+  const [fcmPermission, setFcmPermission] = useState<NotificationPermission>('default');
+  const [fcmToken, setFcmToken] = useState<string | null>(null);
+  const [fcmLoading, setFcmLoading] = useState(false);
+  const [testingFcm, setTestingFcm] = useState(false);
+  const [copiedToken, setCopiedToken] = useState(false);
+
   // Radius filter for available requests
   const [selectedRadiusFilter, setSelectedRadiusFilter] = useState<number>(10);
+
+  // View mode for Available Collections tab: 'map' (default radar cluster map) | 'grid' | 'split'
+  const [availableViewMode, setAvailableViewMode] = useState<'map' | 'grid' | 'split'>('map');
+
+  // Notifications slide-over panel state
+  const [notificationsOpen, setNotificationsOpen] = useState<boolean>(false);
+  const [unreadNotifCount, setUnreadNotifCount] = useState<number>(0);
+
+  // Subscribe to real-time notifications for unread count indicator
+  useEffect(() => {
+    if (!currentUser) {
+      setUnreadNotifCount(0);
+      return;
+    }
+    const unsubscribe = subscribeNotifications(currentUser.uid, (notifs) => {
+      const unread = notifs.filter((n) => !n.read).length;
+      setUnreadNotifCount(unread);
+    });
+
+    return () => {
+      if (typeof unsubscribe === 'function') {
+        unsubscribe();
+      }
+    };
+  }, [currentUser]);
+
+  // Initialize FCM capabilities & foreground listener
+  useEffect(() => {
+    isFcmSupported().then((supported) => {
+      setFcmSupported(supported);
+      if (typeof window !== 'undefined' && 'Notification' in window) {
+        setFcmPermission(Notification.permission);
+      }
+    });
+
+    const unsubscribe = subscribeForegroundFcm((payload) => {
+      setActionMessage({
+        type: 'success',
+        text: `🔔 Push Notification: "${payload.title}" - ${payload.body}`,
+      });
+    });
+
+    return () => {
+      unsubscribe();
+    };
+  }, []);
 
   // Fetch or initialize volunteer profile
   useEffect(() => {
@@ -95,6 +167,12 @@ export const VolunteerView: React.FC<VolunteerViewProps> = ({
           setOptInNotifs(existing.optInNotifications ?? true);
           setIsAvailable(existing.isAvailable ?? true);
           setServiceArea(existing.serviceArea || 'Downtown & Metro Area');
+          if (existing.pushNotificationsEnabled) {
+            setFcmEnabled(true);
+          }
+          if (existing.fcmToken) {
+            setFcmToken(existing.fcmToken);
+          }
           if (existing.latitude && existing.longitude) {
             setVolunteerCoords({ lat: existing.latitude, lng: existing.longitude });
           }
@@ -139,6 +217,68 @@ export const VolunteerView: React.FC<VolunteerViewProps> = ({
     );
   };
 
+  // Toggle Browser Push Notifications (FCM)
+  const handleTogglePushNotifications = async () => {
+    if (!currentUser) {
+      onNavigateTab && onNavigateTab('auth');
+      return;
+    }
+    setFcmLoading(true);
+    setActionMessage(null);
+    try {
+      if (!fcmEnabled) {
+        const res = await enableVolunteerPushNotifications(currentUser.uid);
+        if (res.success) {
+          setFcmEnabled(true);
+          setFcmPermission('granted');
+          if (res.token) setFcmToken(res.token);
+          setActionMessage({ type: 'success', text: res.message });
+        } else {
+          setFcmPermission(res.permission);
+          setActionMessage({ type: 'error', text: res.message });
+        }
+      } else {
+        await disableVolunteerPushNotifications(currentUser.uid);
+        setFcmEnabled(false);
+        setActionMessage({
+          type: 'success',
+          text: 'Browser push notifications paused. You can re-enable anytime.',
+        });
+      }
+    } catch (err: any) {
+      setActionMessage({ type: 'error', text: `Push notification error: ${err.message}` });
+    } finally {
+      setFcmLoading(false);
+    }
+  };
+
+  // Send Test Push Notification
+  const handleTestPushNotification = async () => {
+    setTestingFcm(true);
+    try {
+      const res = await sendTestBrowserPushNotification(
+        '🚨 ResQBite Collection Alert',
+        `Food rescue dispatch test successful! You are active within ${radiusKm} km radius.`
+      );
+      setActionMessage({
+        type: res.success ? 'success' : 'error',
+        text: res.message,
+      });
+    } catch (err: any) {
+      setActionMessage({ type: 'error', text: err.message });
+    } finally {
+      setTestingFcm(false);
+    }
+  };
+
+  const handleCopyFcmToken = () => {
+    if (!fcmToken) return;
+    navigator.clipboard.writeText(fcmToken).then(() => {
+      setCopiedToken(true);
+      setTimeout(() => setCopiedToken(false), 2500);
+    });
+  };
+
   // Save Settings
   const handleSaveSettings = async () => {
     if (!currentUser) return;
@@ -153,6 +293,8 @@ export const VolunteerView: React.FC<VolunteerViewProps> = ({
         isAvailable,
         notificationRadiusKm: radiusKm,
         optInNotifications: optInNotifs,
+        pushNotificationsEnabled: fcmEnabled,
+        ...(fcmToken ? { fcmToken } : {}),
         latitude: volunteerCoords?.lat,
         longitude: volunteerCoords?.lng,
       });
@@ -487,10 +629,19 @@ export const VolunteerView: React.FC<VolunteerViewProps> = ({
                 <Navigation className="w-3.5 h-3.5 text-blue-600" />
                 <span>Vehicle: {vehicleType}</span>
               </span>
-              <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-xl bg-stone-100 font-semibold">
-                <Bell className="w-3.5 h-3.5 text-amber-600" />
+              <button
+                onClick={() => setNotificationsOpen(true)}
+                className="inline-flex items-center gap-1.5 px-3 py-1 rounded-xl bg-stone-100 hover:bg-stone-200 text-stone-700 font-semibold cursor-pointer transition-colors"
+                title="Open Recent Notifications Slide-over"
+              >
+                <Bell className={`w-3.5 h-3.5 ${unreadNotifCount > 0 ? 'text-emerald-600' : 'text-amber-600'}`} />
                 <span>Alerts: {optInNotifs ? 'Active' : 'Muted'}</span>
-              </span>
+                {unreadNotifCount > 0 && (
+                  <span className="px-1.5 py-0.2 rounded-full text-[10px] font-black bg-emerald-600 text-white">
+                    {unreadNotifCount}
+                  </span>
+                )}
+              </button>
             </div>
           </div>
 
@@ -591,34 +742,150 @@ export const VolunteerView: React.FC<VolunteerViewProps> = ({
             <Sliders className="w-4 h-4" />
             <span>Radius & Preferences</span>
           </button>
+
+          {/* Slide-over Recent Notifications Action Button */}
+          <button
+            onClick={() => setNotificationsOpen(true)}
+            className={`ml-auto px-4 py-2.5 rounded-xl font-bold text-xs sm:text-sm flex items-center gap-2 transition-all cursor-pointer border ${
+              unreadNotifCount > 0
+                ? 'bg-emerald-50 text-emerald-900 border-emerald-300 hover:bg-emerald-100 shadow-xs'
+                : 'bg-white text-stone-700 border-stone-200 hover:bg-stone-50'
+            }`}
+            aria-label="Open Recent Notifications slide-over"
+          >
+            <div className="relative">
+              <Bell className={`w-4 h-4 ${unreadNotifCount > 0 ? 'text-emerald-700' : 'text-stone-500'}`} />
+              {unreadNotifCount > 0 && (
+                <span className="absolute -top-1 -right-1 w-2 h-2 rounded-full bg-emerald-600 animate-ping" />
+              )}
+            </div>
+            <span>Recent Notifications</span>
+            {unreadNotifCount > 0 ? (
+              <span className="px-2 py-0.5 rounded-full text-xs font-black bg-emerald-600 text-white">
+                {unreadNotifCount}
+              </span>
+            ) : (
+              <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-stone-100 text-stone-600">
+                0
+              </span>
+            )}
+          </button>
         </div>
       </div>
 
       {/* TAB 1: AVAILABLE COLLECTIONS */}
       {activeTab === 'available' && (
         <div className="space-y-6">
-          {/* Filter Bar */}
-          <div className="bg-white p-4 rounded-2xl border border-stone-200 flex flex-wrap items-center justify-between gap-4">
-            <div className="flex items-center gap-2 text-xs font-bold text-stone-700">
-              <Compass className="w-4 h-4 text-emerald-600" />
-              <span>Filter by Distance from You:</span>
+          {/* Browser Push Notification Opt-in Prompt Banner */}
+          {fcmSupported && !fcmEnabled && fcmPermission !== 'denied' && (
+            <div className="bg-gradient-to-r from-emerald-700 to-teal-800 text-white rounded-2xl p-4 sm:p-5 shadow-sm flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 animate-in fade-in">
+              <div className="flex items-start sm:items-center gap-3.5">
+                <div className="w-10 h-10 rounded-xl bg-white/15 flex items-center justify-center shrink-0">
+                  <BellRing className="w-5 h-5 text-amber-300 animate-pulse" />
+                </div>
+                <div>
+                  <h4 className="font-bold text-sm sm:text-base flex items-center gap-2">
+                    <span>Enable Browser Push Notifications</span>
+                    <span className="text-[10px] uppercase font-black px-2 py-0.5 rounded-full bg-amber-400 text-stone-950">
+                      Firebase Cloud Messaging
+                    </span>
+                  </h4>
+                  <p className="text-xs text-emerald-100/90 mt-0.5">
+                    Get instant native desktop and mobile lock-screen alerts whenever surplus food is posted within {radiusKm} km of your base.
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={handleTogglePushNotifications}
+                disabled={fcmLoading}
+                className="bg-amber-400 hover:bg-amber-300 text-stone-950 font-bold text-xs px-4 py-2.5 rounded-xl transition-colors cursor-pointer shrink-0 shadow-xs flex items-center gap-1.5 disabled:opacity-50"
+              >
+                {fcmLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Bell className="w-4 h-4" />}
+                <span>Enable Push Alerts</span>
+              </button>
             </div>
-            <div className="flex flex-wrap items-center gap-1.5">
-              {[5, 10, 20, 0].map((r) => (
-                <button
-                  key={r}
-                  onClick={() => setSelectedRadiusFilter(r)}
-                  className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-colors cursor-pointer ${
-                    selectedRadiusFilter === r
-                      ? 'bg-emerald-600 text-white shadow-xs'
-                      : 'bg-stone-100 text-stone-700 hover:bg-stone-200'
-                  }`}
-                >
-                  {r === 0 ? 'All Regions' : `Within ${r} km`}
-                </button>
-              ))}
+          )}
+
+          {/* Filter Bar with Proximity and View Mode Switcher */}
+          <div className="bg-white p-4 rounded-2xl border border-stone-200 flex flex-wrap items-center justify-between gap-4 shadow-2xs">
+            <div className="flex flex-wrap items-center gap-2">
+              <div className="flex items-center gap-2 text-xs font-bold text-stone-700 pr-2 border-r border-stone-200">
+                <Compass className="w-4 h-4 text-emerald-600" />
+                <span>Proximity Filter:</span>
+              </div>
+              <div className="flex flex-wrap items-center gap-1.5">
+                {[3, 5, 10, 20, 0].map((r) => (
+                  <button
+                    key={r}
+                    onClick={() => setSelectedRadiusFilter(r)}
+                    className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-colors cursor-pointer ${
+                      selectedRadiusFilter === r
+                        ? 'bg-emerald-600 text-white shadow-xs'
+                        : 'bg-stone-100 text-stone-700 hover:bg-stone-200'
+                    }`}
+                  >
+                    {r === 0 ? 'All Regions' : `Within ${r} km`}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* View Mode Switcher */}
+            <div className="flex items-center bg-stone-100 p-1 rounded-xl text-xs font-bold gap-1">
+              <button
+                onClick={() => setAvailableViewMode('map')}
+                className={`px-3 py-1.5 rounded-lg flex items-center gap-1.5 transition-all cursor-pointer ${
+                  availableViewMode === 'map'
+                    ? 'bg-white text-emerald-800 shadow-xs font-black'
+                    : 'text-stone-600 hover:text-stone-900'
+                }`}
+                title="Cluster Radar Map View"
+              >
+                <MapIcon className="w-3.5 h-3.5 text-emerald-600" />
+                <span>Map Radar</span>
+              </button>
+              <button
+                onClick={() => setAvailableViewMode('split')}
+                className={`px-3 py-1.5 rounded-lg flex items-center gap-1.5 transition-all cursor-pointer ${
+                  availableViewMode === 'split'
+                    ? 'bg-white text-emerald-800 shadow-xs font-black'
+                    : 'text-stone-600 hover:text-stone-900'
+                }`}
+                title="Split Map & List View"
+              >
+                <Layers className="w-3.5 h-3.5 text-blue-600" />
+                <span className="hidden sm:inline">Split View</span>
+              </button>
+              <button
+                onClick={() => setAvailableViewMode('grid')}
+                className={`px-3 py-1.5 rounded-lg flex items-center gap-1.5 transition-all cursor-pointer ${
+                  availableViewMode === 'grid'
+                    ? 'bg-white text-emerald-800 shadow-xs font-black'
+                    : 'text-stone-600 hover:text-stone-900'
+                }`}
+                title="Cards Grid View"
+              >
+                <LayoutGrid className="w-3.5 h-3.5 text-amber-600" />
+                <span>Cards Grid</span>
+              </button>
             </div>
           </div>
+
+          {/* REAL-TIME CLUSTER MAP VIEW */}
+          {(availableViewMode === 'map' || availableViewMode === 'split') && (
+            <div className="space-y-4">
+              <VolunteerClusterMap
+                donations={donations}
+                volunteerLat={volLat}
+                volunteerLng={volLng}
+                baseRadiusKm={selectedRadiusFilter || radiusKm || 10}
+                onSelectDonation={onSelectDonation}
+                onAcceptRequest={handleAcceptRequest}
+                claimingDonationId={claimingDonationId}
+                height={availableViewMode === 'split' ? '440px' : '520px'}
+              />
+            </div>
+          )}
 
           {availableCollections.length === 0 ? (
             <div className="bg-white rounded-3xl p-12 text-center border border-stone-200 max-w-xl mx-auto space-y-4">
@@ -1171,6 +1438,110 @@ export const VolunteerView: React.FC<VolunteerViewProps> = ({
               </button>
             </div>
 
+            {/* DEDICATED SECTION: Firebase Cloud Messaging Browser Push Notifications */}
+            <div className="p-5 rounded-2xl bg-gradient-to-br from-emerald-50/70 to-teal-50/70 border border-emerald-200 space-y-4">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <div className="flex items-start gap-3">
+                  <div className="w-10 h-10 rounded-xl bg-emerald-600 text-white flex items-center justify-center shrink-0 shadow-xs">
+                    <BellRing className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <h4 className="font-bold text-sm text-stone-900">Browser Push Notifications</h4>
+                      <span className="text-[10px] uppercase font-black px-2 py-0.5 rounded-full bg-emerald-700 text-white tracking-wider">
+                        FCM Web Push
+                      </span>
+                    </div>
+                    <p className="text-xs text-stone-600 mt-0.5">
+                      Receive immediate desktop and mobile lock-screen alerts whenever new donations are submitted within {radiusKm} km of your base.
+                    </p>
+                  </div>
+                </div>
+
+                <div className="shrink-0">
+                  {fcmEnabled && fcmPermission === 'granted' ? (
+                    <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold bg-emerald-100 text-emerald-800 border border-emerald-200">
+                      <Check className="w-3.5 h-3.5 text-emerald-600" />
+                      <span>Active & Subscribed</span>
+                    </span>
+                  ) : fcmPermission === 'denied' ? (
+                    <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold bg-rose-100 text-rose-800 border border-rose-200">
+                      <AlertCircle className="w-3.5 h-3.5 text-rose-600" />
+                      <span>Blocked in Browser</span>
+                    </span>
+                  ) : (
+                    <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold bg-stone-100 text-stone-600 border border-stone-200">
+                      <span>Not Enabled</span>
+                    </span>
+                  )}
+                </div>
+              </div>
+
+              {/* Action Buttons & Test Trigger */}
+              <div className="flex flex-wrap items-center gap-2.5 pt-2 border-t border-emerald-100">
+                <button
+                  onClick={handleTogglePushNotifications}
+                  disabled={fcmLoading}
+                  className={`px-4 py-2.5 rounded-xl font-bold text-xs transition-colors flex items-center gap-2 cursor-pointer disabled:opacity-50 ${
+                    fcmEnabled
+                      ? 'bg-stone-200 hover:bg-stone-300 text-stone-800'
+                      : 'bg-emerald-600 hover:bg-emerald-700 text-white shadow-xs'
+                  }`}
+                >
+                  {fcmLoading ? (
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                  ) : (
+                    <Bell className="w-4 h-4" />
+                  )}
+                  <span>{fcmEnabled ? 'Pause Push Notifications' : 'Enable Browser Push Notifications'}</span>
+                </button>
+
+                <button
+                  onClick={handleTestPushNotification}
+                  disabled={testingFcm}
+                  className="bg-white hover:bg-stone-50 text-stone-700 border border-stone-200 px-4 py-2.5 rounded-xl font-bold text-xs transition-colors flex items-center gap-2 cursor-pointer disabled:opacity-50"
+                >
+                  {testingFcm ? (
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                  ) : (
+                    <Send className="w-4 h-4 text-emerald-600" />
+                  )}
+                  <span>Send Test Push Alert</span>
+                </button>
+              </div>
+
+              {/* FCM Device Token & Status Diagnostics */}
+              <div className="pt-2 text-[11px] text-stone-500 space-y-1.5">
+                <div className="flex items-center justify-between">
+                  <span>Service Worker Handler:</span>
+                  <span className="font-mono text-emerald-800 font-semibold">/firebase-messaging-sw.js</span>
+                </div>
+                {fcmToken && (
+                  <div className="flex items-center justify-between bg-white/80 p-2 rounded-xl border border-emerald-100">
+                    <span className="truncate max-w-[280px] font-mono text-[10px] text-stone-600">
+                      FCM Token: {fcmToken.slice(0, 24)}...{fcmToken.slice(-12)}
+                    </span>
+                    <button
+                      onClick={handleCopyFcmToken}
+                      className="text-emerald-700 font-bold hover:text-emerald-850 flex items-center gap-1 cursor-pointer ml-2 shrink-0"
+                    >
+                      {copiedToken ? (
+                        <>
+                          <Check className="w-3.5 h-3.5 text-emerald-600" />
+                          <span>Copied</span>
+                        </>
+                      ) : (
+                        <>
+                          <Copy className="w-3.5 h-3.5" />
+                          <span>Copy Token</span>
+                        </>
+                      )}
+                    </button>
+                  </div>
+                )}
+              </div>
+            </div>
+
             {/* Save Button */}
             <button
               onClick={handleSaveSettings}
@@ -1231,6 +1602,16 @@ export const VolunteerView: React.FC<VolunteerViewProps> = ({
           </div>
         </div>
       )}
+
+      {/* Recent Notifications Slide-over Panel */}
+      <VolunteerNotificationsSlideOver
+        isOpen={notificationsOpen}
+        onClose={() => setNotificationsOpen(false)}
+        userId={currentUser?.uid || ''}
+        donations={donations}
+        onSelectDonation={onSelectDonation}
+        onNavigateTab={(tab) => setActiveTab(tab as any)}
+      />
     </div>
   );
 };

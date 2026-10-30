@@ -7,7 +7,7 @@
     "dev": "vite --port=3000 --host=0.0.0.0",
     "build": "vite build && esbuild server/geminiApi.ts server/app.ts --format=esm --platform=node --outdir=server",
     "start": "tsx server.ts",
-    "test": "tsx tests/workflow_validation.ts && tsx tests/volunteer_workflow_validation.ts && tsx tests/role_selection_workflow_validation.ts && tsx tests/mithra_ai_validation.ts && tsx tests/api_endpoint_validation.ts",
+    "test": "tsx tests/workflow_validation.ts && tsx tests/volunteer_workflow_validation.ts && tsx tests/role_selection_workflow_validation.ts && tsx tests/mithra_ai_validation.ts && tsx tests/api_endpoint_validation.ts && tsx tests/fcm_push_notification_validation.ts && tsx tests/notifications_slideover_validation.ts && tsx tests/volunteer_cluster_map_validation.ts",
     "preview": "vite preview",
     "clean": "rm -rf dist server/geminiApi.js server/app.js",
     "lint": "tsc --noEmit"

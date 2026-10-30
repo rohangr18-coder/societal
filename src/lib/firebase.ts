@@ -125,7 +125,7 @@ if (!startupDiagnostic.isValid) {
 }
 
 // Initialize Firebase App
-const app = !getApps().length ? initializeApp(activeFirebaseConfig) : getApp();
+export const app = !getApps().length ? initializeApp(activeFirebaseConfig) : getApp();
 
 // CRITICAL: Initialize Firestore with custom databaseId and resilient long-polling
 let firestoreDb: Firestore;
