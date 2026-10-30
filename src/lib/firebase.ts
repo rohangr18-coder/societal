@@ -54,19 +54,21 @@ export function handleFirestoreError(error: unknown, operationType: OperationTyp
   throw new Error(JSON.stringify(errInfo));
 }
 
+const metaEnv = typeof import.meta !== 'undefined' ? import.meta.env : undefined;
+
 // Support Vercel / Vite environment variables with graceful fallback to firebase-applet-config.json
 export const activeFirebaseConfig = {
-  apiKey: import.meta.env.VITE_FIREBASE_API_KEY || defaultFirebaseConfig.apiKey || '',
-  authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN || defaultFirebaseConfig.authDomain || '',
-  projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID || defaultFirebaseConfig.projectId || '',
-  storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET || defaultFirebaseConfig.storageBucket || '',
-  messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID || defaultFirebaseConfig.messagingSenderId || '',
-  appId: import.meta.env.VITE_FIREBASE_APP_ID || defaultFirebaseConfig.appId || '',
-  measurementId: import.meta.env.VITE_FIREBASE_MEASUREMENT_ID || defaultFirebaseConfig.measurementId || '',
+  apiKey: metaEnv?.VITE_FIREBASE_API_KEY || defaultFirebaseConfig.apiKey || '',
+  authDomain: metaEnv?.VITE_FIREBASE_AUTH_DOMAIN || defaultFirebaseConfig.authDomain || '',
+  projectId: metaEnv?.VITE_FIREBASE_PROJECT_ID || defaultFirebaseConfig.projectId || '',
+  storageBucket: metaEnv?.VITE_FIREBASE_STORAGE_BUCKET || defaultFirebaseConfig.storageBucket || '',
+  messagingSenderId: metaEnv?.VITE_FIREBASE_MESSAGING_SENDER_ID || defaultFirebaseConfig.messagingSenderId || '',
+  appId: metaEnv?.VITE_FIREBASE_APP_ID || defaultFirebaseConfig.appId || '',
+  measurementId: metaEnv?.VITE_FIREBASE_MEASUREMENT_ID || defaultFirebaseConfig.measurementId || '',
 };
 
 export const activeFirestoreDatabaseId =
-  import.meta.env.VITE_FIREBASE_FIRESTORE_DATABASE_ID ||
+  metaEnv?.VITE_FIREBASE_FIRESTORE_DATABASE_ID ||
   defaultFirebaseConfig.firestoreDatabaseId ||
   '';
 
@@ -74,7 +76,7 @@ export const firebaseProjectInfo = {
   projectId: activeFirebaseConfig.projectId,
   authDomain: activeFirebaseConfig.authDomain,
   firestoreDatabaseId: activeFirestoreDatabaseId,
-  isCustomEnvConfigured: Boolean(import.meta.env.VITE_FIREBASE_PROJECT_ID),
+  isCustomEnvConfigured: Boolean(metaEnv?.VITE_FIREBASE_PROJECT_ID),
 };
 
 export interface FirebaseDiagnostic {

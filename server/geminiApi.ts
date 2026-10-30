@@ -479,23 +479,37 @@ Format:
       parts: [{ text: sanitizedMessage }],
     });
 
-    const generatePromise = ai.models.generateContent({
-      model: 'gemini-3.1-flash-lite',
-      contents,
-      config: {
-        systemInstruction,
-        temperature: 0.7,
-        maxOutputTokens: 600,
-      },
-    });
-
     let timerId: NodeJS.Timeout | undefined;
     const timeoutPromise = new Promise<never>((_, reject) => {
       timerId = setTimeout(() => reject(new Error('Gemini API call timed out after 15s')), 15000);
     });
 
+    const callGemini = async () => {
+      try {
+        return await ai.models.generateContent({
+          model: 'gemini-3.8-flash',
+          contents,
+          config: {
+            systemInstruction,
+            temperature: 0.7,
+            maxOutputTokens: 800,
+          },
+        });
+      } catch (primaryErr) {
+        return await ai.models.generateContent({
+          model: 'gemini-3.1-flash-lite',
+          contents,
+          config: {
+            systemInstruction,
+            temperature: 0.7,
+            maxOutputTokens: 600,
+          },
+        });
+      }
+    };
+
     try {
-      const response = await Promise.race([generatePromise, timeoutPromise]);
+      const response = await Promise.race([callGemini(), timeoutPromise]);
       if (timerId) clearTimeout(timerId);
 
       const rawReply = response.text || 'I am ready to help you with your food rescue mission!';

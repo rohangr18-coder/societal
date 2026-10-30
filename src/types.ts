@@ -29,6 +29,10 @@ export interface UserProfile {
   phone?: string;
   organizationId?: string;
   preferredLanguage?: 'en' | 'kn' | 'hi' | 'ta';
+  pushNotificationsEnabled?: boolean;
+  pushNotificationPermission?: 'default' | 'granted' | 'denied';
+  fcmToken?: string;
+  notificationRadiusKm?: number;
   createdAt: string;
   updatedAt: string;
 }

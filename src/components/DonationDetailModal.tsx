@@ -28,6 +28,8 @@ import { GoogleRescueMap } from './GoogleRescueMap';
 import { QRVerificationModal } from './QRVerificationModal';
 import { LiveTrackingModal } from './LiveTrackingModal';
 import { SmartMatchModal } from './SmartMatchModal';
+import { RescueTimeline } from './RescueTimeline';
+import { PickupCountdownTimer } from './PickupCountdownTimer';
 import { useLanguage } from '../context/LanguageContext';
 
 interface DonationDetailModalProps {
@@ -209,13 +211,31 @@ export const DonationDetailModal: React.FC<DonationDetailModalProps> = ({ donati
             </div>
           </div>
 
+          {/* Dynamic 'Time Remaining' Countdown Timer Banner */}
+          <PickupCountdownTimer
+            pickupDeadline={donation.pickupDeadline}
+            collectionDeadline={donation.collectionDeadline}
+            pickupDate={donation.pickupDate}
+            timeZone={donation.timeZone}
+            variant="banner"
+          />
+
           {/* Attributes Grid */}
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 bg-stone-50 p-4 rounded-2xl text-xs">
             <div>
               <span className="text-stone-400 block mb-0.5 flex items-center gap-1">
                 <Clock className="w-3.5 h-3.5 text-stone-500" /> Deadline
               </span>
-              <span className="font-bold text-stone-800">{donation.pickupDeadline}</span>
+              <span className="font-bold text-stone-800 block truncate">{donation.pickupDeadline}</span>
+              <div className="mt-1">
+                <PickupCountdownTimer
+                  pickupDeadline={donation.pickupDeadline}
+                  collectionDeadline={donation.collectionDeadline}
+                  pickupDate={donation.pickupDate}
+                  timeZone={donation.timeZone}
+                  variant="inline"
+                />
+              </div>
             </div>
             <div>
               <span className="text-stone-400 block mb-0.5 flex items-center gap-1">
@@ -265,11 +285,20 @@ export const DonationDetailModal: React.FC<DonationDetailModalProps> = ({ donati
               </div>
               <div>
                 <span className="text-stone-500 block text-[11px]">Collection Deadline</span>
-                <span className="font-bold text-amber-900 text-sm">
+                <span className="font-bold text-amber-900 text-sm block">
                   {donation.collectionDeadline
                     ? donation.collectionDeadline.replace('T', ' ')
                     : donation.pickupDeadline}
                 </span>
+                <div className="mt-1">
+                  <PickupCountdownTimer
+                    pickupDeadline={donation.pickupDeadline}
+                    collectionDeadline={donation.collectionDeadline}
+                    pickupDate={donation.pickupDate}
+                    timeZone={donation.timeZone}
+                    variant="inline"
+                  />
+                </div>
               </div>
             </div>
             {donation.preferredPickupTime && (
@@ -460,29 +489,8 @@ export const DonationDetailModal: React.FC<DonationDetailModalProps> = ({ donati
             />
           </div>
 
-          {/* Timeline of Status */}
-          <div>
-            <h3 className="font-bold text-stone-900 text-sm mb-3">Donation Lifecycle Timeline</h3>
-            <div className="space-y-3 relative pl-6 before:content-[''] before:absolute before:left-2 before:top-2 before:bottom-2 before:w-0.5 before:bg-stone-200">
-              {donation.timeline?.map((entry, idx) => (
-                <div key={idx} className="relative text-xs">
-                  <span className="absolute -left-6 top-1 w-3 h-3 rounded-full bg-emerald-600 border-2 border-white shadow-2xs" />
-                  <div className="flex items-center justify-between font-bold text-stone-800">
-                    <span className="capitalize">{entry.status.replace('_', ' ')}</span>
-                    <span className="text-[10px] text-stone-400 font-normal">
-                      {new Date(entry.timestamp).toLocaleString([], {
-                        month: 'short',
-                        day: 'numeric',
-                        hour: '2-digit',
-                        minute: '2-digit',
-                      })}
-                    </span>
-                  </div>
-                  <p className="text-stone-500 mt-0.5">{entry.actorName} - {entry.note}</p>
-                </div>
-              ))}
-            </div>
-          </div>
+          {/* Visual Rescue Timeline with Vertical Progress Bar */}
+          <RescueTimeline donation={donation} />
         </div>
 
         {/* Footer Actions */}

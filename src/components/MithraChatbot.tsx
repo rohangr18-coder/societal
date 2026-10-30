@@ -19,13 +19,15 @@ import {
 import { Donation, UserProfile, ChatMessage, ChatAction } from '../types';
 import { useLanguage } from '../context/LanguageContext';
 
-interface MithraChatbotProps {
+export interface MithraChatbotProps {
   onNavigate: (tab: string) => void;
   onOpenCreateDonation: () => void;
   onSelectDonation?: (donation: Donation) => void;
   donations: Donation[];
   userProfile: UserProfile | null;
   onSeedDemo?: () => void;
+  isOpen?: boolean;
+  onToggleOpen?: (open: boolean) => void;
 }
 
 const STARTER_QUESTIONS_MAP: Record<string, string[]> = {
@@ -66,10 +68,24 @@ export const MithraChatbot: React.FC<MithraChatbotProps> = ({
   donations,
   userProfile,
   onSeedDemo,
+  isOpen: externalIsOpen,
+  onToggleOpen,
 }) => {
   const { language, t } = useLanguage();
   const starterQuestions = STARTER_QUESTIONS_MAP[language] || STARTER_QUESTIONS_MAP.en;
-  const [isOpen, setIsOpen] = useState(false);
+  const [internalIsOpen, setInternalIsOpen] = useState(false);
+
+  useEffect(() => {
+    if (typeof externalIsOpen === 'boolean') {
+      setInternalIsOpen(externalIsOpen);
+    }
+  }, [externalIsOpen]);
+
+  const isOpen = typeof externalIsOpen === 'boolean' ? externalIsOpen : internalIsOpen;
+  const setIsOpen = (val: boolean) => {
+    setInternalIsOpen(val);
+    if (onToggleOpen) onToggleOpen(val);
+  };
   const [messages, setMessages] = useState<ChatMessage[]>(() => {
     // Attempt to load saved conversation from sessionStorage
     try {

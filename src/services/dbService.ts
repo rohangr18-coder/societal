@@ -80,6 +80,22 @@ export async function createOrUpdateUserProfile(profile: Partial<UserProfile> & 
       phone: profile.phone ?? existing?.phone ?? '',
       organizationId: profile.organizationId ?? existing?.organizationId ?? '',
       preferredLanguage: profile.preferredLanguage ?? existing?.preferredLanguage ?? 'en',
+      ...(profile.pushNotificationsEnabled !== undefined
+        ? { pushNotificationsEnabled: profile.pushNotificationsEnabled }
+        : existing?.pushNotificationsEnabled !== undefined
+        ? { pushNotificationsEnabled: existing.pushNotificationsEnabled }
+        : {}),
+      ...(profile.pushNotificationPermission
+        ? { pushNotificationPermission: profile.pushNotificationPermission }
+        : existing?.pushNotificationPermission
+        ? { pushNotificationPermission: existing.pushNotificationPermission }
+        : {}),
+      ...(profile.fcmToken ? { fcmToken: profile.fcmToken } : existing?.fcmToken ? { fcmToken: existing.fcmToken } : {}),
+      ...(profile.notificationRadiusKm !== undefined
+        ? { notificationRadiusKm: profile.notificationRadiusKm }
+        : existing?.notificationRadiusKm !== undefined
+        ? { notificationRadiusKm: existing.notificationRadiusKm }
+        : {}),
       createdAt: existing?.createdAt || profile.createdAt || new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     };
@@ -1014,6 +1030,10 @@ export async function saveVolunteerProfile(profile: Partial<VolunteerProfile> & 
       notificationRadiusKm: profile.notificationRadiusKm ?? 10,
       optInNotifications: profile.optInNotifications ?? true,
       emergencyContact: profile.emergencyContact,
+      ...(profile.fcmToken !== undefined ? { fcmToken: profile.fcmToken } : {}),
+      ...(profile.pushNotificationsEnabled !== undefined ? { pushNotificationsEnabled: profile.pushNotificationsEnabled } : {}),
+      ...(profile.pushNotificationPermission ? { pushNotificationPermission: profile.pushNotificationPermission } : {}),
+      ...(profile.lastTokenUpdate ? { lastTokenUpdate: profile.lastTokenUpdate } : {}),
       createdAt: profile.createdAt || now,
       updatedAt: now,
     };

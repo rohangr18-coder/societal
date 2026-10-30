@@ -34,6 +34,7 @@ function AppContent() {
   const [selectedDonation, setSelectedDonation] = useState<Donation | null>(null);
   const [seedingLoading, setSeedingLoading] = useState(false);
   const [dbConnected, setDbConnected] = useState<boolean | null>(null);
+  const [mithraOpen, setMithraOpen] = useState(false);
 
   // Initialize and subscribe to Firestore donations
   useEffect(() => {
@@ -175,6 +176,7 @@ function AppContent() {
         onSelectRoleBeforeLogin={(role) => {
           setAuthInitialRole(role);
         }}
+        onOpenMithra={() => setMithraOpen(true)}
       />
 
       {/* Main View Router */}
@@ -306,6 +308,8 @@ function AppContent() {
         donations={donations}
         userProfile={userProfile}
         onSeedDemo={handleSeedInitialData}
+        isOpen={mithraOpen}
+        onToggleOpen={setMithraOpen}
       />
 
       <Footer onNavigate={setCurrentTab} />

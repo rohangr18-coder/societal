@@ -26,7 +26,9 @@ import { calculateDistanceKm } from '../utils/geo';
 import { useDeviceLocation, DeviceLocation } from '../hooks/useDeviceLocation';
 
 export const GOOGLE_MAPS_API_KEY =
-  import.meta.env.VITE_GOOGLE_MAPS_API_KEY || 'AIzaSyCRzQ8n6teSl3S8wTYYuFz-yy5ehJW6f3k';
+  (typeof import.meta !== 'undefined' && import.meta.env?.VITE_GOOGLE_MAPS_API_KEY) ||
+  (typeof process !== 'undefined' && process.env?.VITE_GOOGLE_MAPS_API_KEY) ||
+  'AIzaSyCRzQ8n6teSl3S8wTYYuFz-yy5ehJW6f3k';
 
 interface GoogleRescueMapProps {
   donations?: Donation[];

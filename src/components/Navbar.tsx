@@ -18,6 +18,7 @@ import {
   Globe,
   ChevronDown,
   Bike,
+  Sparkles,
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { useLanguage } from '../context/LanguageContext';
@@ -29,6 +30,7 @@ interface NavbarProps {
   setCurrentTab: (tab: string) => void;
   onOpenCreateDonation: () => void;
   onSelectRoleBeforeLogin?: (role: 'donor' | 'volunteer') => void;
+  onOpenMithra?: () => void;
 }
 
 export const Navbar: React.FC<NavbarProps> = ({
@@ -36,6 +38,7 @@ export const Navbar: React.FC<NavbarProps> = ({
   setCurrentTab,
   onOpenCreateDonation,
   onSelectRoleBeforeLogin,
+  onOpenMithra,
 }) => {
   const { currentUser, userProfile, logout, isAdmin, isNgo, isDonor, isVolunteer } = useAuth();
   const { language, setLanguage, t, availableLanguages } = useLanguage();
@@ -237,6 +240,19 @@ export const Navbar: React.FC<NavbarProps> = ({
                 </div>
               )}
             </div>
+
+            {/* Mithra AI Button */}
+            {onOpenMithra && (
+              <button
+                type="button"
+                onClick={onOpenMithra}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl border border-emerald-200 bg-emerald-50 hover:bg-emerald-100 text-emerald-900 text-xs font-bold transition-all shadow-2xs hover:scale-102 cursor-pointer"
+                title="Open Mithra AI Chatbot"
+              >
+                <Sparkles className="w-3.5 h-3.5 text-amber-500 animate-pulse" />
+                <span>Mithra AI</span>
+              </button>
+            )}
 
             {currentUser ? (
               <>
@@ -482,6 +498,19 @@ export const Navbar: React.FC<NavbarProps> = ({
           >
             {t('nav.about')}
           </button>
+
+          {onOpenMithra && (
+            <button
+              onClick={() => {
+                setMobileMenuOpen(false);
+                onOpenMithra();
+              }}
+              className="w-full text-left px-3 py-2.5 rounded-xl font-bold text-emerald-900 bg-emerald-50 hover:bg-emerald-100 flex items-center gap-2 border border-emerald-200 cursor-pointer"
+            >
+              <Sparkles className="w-4 h-4 text-amber-500 animate-pulse" />
+              <span>Ask Mithra AI Assistant</span>
+            </button>
+          )}
 
           <div className="pt-3 border-t border-stone-200">
             {currentUser ? (
