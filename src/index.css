@@ -1,1 +1,29 @@
 @import "tailwindcss";
+
+@media print {
+  body * {
+    visibility: hidden !important;
+  }
+  #printable-impact-summary,
+  #printable-impact-summary * {
+    visibility: visible !important;
+  }
+  #printable-impact-summary {
+    position: absolute !important;
+    left: 0 !important;
+    top: 0 !important;
+    width: 100% !important;
+    margin: 0 !important;
+    padding: 24px !important;
+    background: white !important;
+    color: #1c1917 !important;
+    box-shadow: none !important;
+    border: none !important;
+    overflow: visible !important;
+    z-index: 99999 !important;
+  }
+  .no-print {
+    display: none !important;
+  }
+}
+

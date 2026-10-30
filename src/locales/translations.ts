@@ -86,6 +86,9 @@ export const translations: Record<SupportedLanguage, TranslationDictionary> = {
     'impact.waterSaved': 'Water Conserved (est.)',
     'impact.activeDonations': 'Active Surpluses',
     'impact.successRate': 'Rescue Success Rate',
+    'impact.exportCsv': 'Export CSV',
+    'impact.printSummary': 'Printable Summary',
+    'impact.exportReport': 'Export Impact Report',
 
     // Mithra AI
     'mithra.name': 'Mithra AI',
@@ -177,6 +180,9 @@ export const translations: Record<SupportedLanguage, TranslationDictionary> = {
     'impact.waterSaved': 'ಉಳಿಸಿದ ನೀರು (ಅಂದಾಜು)',
     'impact.activeDonations': 'ಲಭ್ಯವಿರುವ ಹೆಚ್ಚುವರಿ ಆಹಾರ',
     'impact.successRate': 'ಯಶಸ್ಸಿನ ದರ',
+    'impact.exportCsv': 'ಸಿಎಸ್‌ವಿ ರಫ್ತು',
+    'impact.printSummary': 'ಮುದ್ರಿಸಬಹುದಾದ ಸಾರಾಂಶ',
+    'impact.exportReport': 'ಪ್ರಭಾವ ವರದಿ ರಫ್ತು',
 
     // Mithra AI
     'mithra.name': 'ಮಿತ್ರ ಎಐ',
@@ -268,6 +274,9 @@ export const translations: Record<SupportedLanguage, TranslationDictionary> = {
     'impact.waterSaved': 'बचाया गया पानी (अनुमानित)',
     'impact.activeDonations': 'सक्रिय उपलब्ध भोजन',
     'impact.successRate': 'सफलता दर',
+    'impact.exportCsv': 'सीएसवी निर्यात',
+    'impact.printSummary': 'प्रिंट करने योग्य सारांश',
+    'impact.exportReport': 'प्रभाव रिपोर्ट निर्यात',
 
     // Mithra AI
     'mithra.name': 'मित्रा एआई',
@@ -359,6 +368,9 @@ export const translations: Record<SupportedLanguage, TranslationDictionary> = {
     'impact.waterSaved': 'சேமிக்கப்பட்ட நீர் (மதிப்பீடு)',
     'impact.activeDonations': 'கிடைக்கும் உபரி உணவு',
     'impact.successRate': 'வெற்றி விகிதம்',
+    'impact.exportCsv': 'சிஎஸ்வி ஏற்றுமதி',
+    'impact.printSummary': 'அச்சிடக்கூடிய சுருக்கம்',
+    'impact.exportReport': 'தாக்க அறிக்கை ஏற்றுமதி',
 
     // Mithra AI
     'mithra.name': 'மித்ரா ஏஐ',

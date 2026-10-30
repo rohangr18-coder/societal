@@ -22,6 +22,7 @@ async function main() {
     './browse_filtering_sidebar_validation.ts',
     './pickup_countdown_timer_validation.ts',
     './impact_recharts_barchart_validation.ts',
+    './impact_export_validation.ts',
   ];
 
   for (const file of testFiles) {

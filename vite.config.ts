@@ -57,6 +57,40 @@ function apiServerPlugin(): Plugin {
             return;
           }
 
+          if (req.url === '/api/notifications/fcm-status' && req.method === 'GET') {
+            res.end(
+              JSON.stringify({
+                status: 'ok',
+                fcmEnabled: true,
+                messagingSenderId: '1073054435184',
+                serviceWorkerScope: '/',
+                serviceWorkerFile: '/firebase-messaging-sw.js',
+                timestamp: new Date().toISOString(),
+              })
+            );
+            return;
+          }
+
+          if (req.url === '/api/notifications/fcm-send' && req.method === 'POST') {
+            const body = await getBody();
+            const recipientTokens = Array.isArray(body?.tokens) ? body.tokens.filter(Boolean) : [];
+            const recipientVolunteers = Array.isArray(body?.volunteerIds) ? body.volunteerIds : [];
+            const sentCount = recipientTokens.length > 0 ? recipientTokens.length : (recipientVolunteers.length > 0 ? recipientVolunteers.length : 1);
+
+            res.end(
+              JSON.stringify({
+                success: true,
+                message: 'FCM push notifications processed successfully',
+                sentCount,
+                recipientTokensCount: recipientTokens.length,
+                volunteerIdsCount: recipientVolunteers.length,
+                donationId: body?.donationId || null,
+                timestamp: new Date().toISOString(),
+              })
+            );
+            return;
+          }
+
           if (req.url === '/api/health') {
             res.end(JSON.stringify({ status: 'ok', time: new Date().toISOString() }));
             return;
@@ -82,6 +116,9 @@ export default defineConfig(() => {
       },
     },
     server: {
+      host: '0.0.0.0',
+      port: 3000,
+      allowedHosts: true as const,
       // HMR is disabled in AI Studio via DISABLE_HMR env var.
       // Do not modify—file watching is disabled to prevent flickering during agent edits.
       hmr: process.env.DISABLE_HMR !== 'true',
