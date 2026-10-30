@@ -23,11 +23,31 @@ service cloud.firestore {
       return resource.data;
     }
 
+    // Role-based admin check: checks admins collection or custom token claim
+    // NO hardcoded emails allowed
     function isAdmin() {
       return isSignedIn() && (
-        (request.auth.token.email == 'rohangr18@gmail.com') ||
-        exists(/databases/$(database)/documents/admins/$(request.auth.uid))
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid)) ||
+        (request.auth.token.role == 'admin')
       );
+    }
+
+    function isDonationDonor(donationId) {
+      return isSignedIn() &&
+        exists(/databases/$(database)/documents/donations/$(donationId)) &&
+        get(/databases/$(database)/documents/donations/$(donationId)).data.donorId == request.auth.uid;
+    }
+
+    function isDonationNgo(donationId) {
+      return isSignedIn() &&
+        exists(/databases/$(database)/documents/donations/$(donationId)) &&
+        get(/databases/$(database)/documents/donations/$(donationId)).data.assignedNgoId == request.auth.uid;
+    }
+
+    function isDonationVolunteer(donationId) {
+      return isSignedIn() &&
+        exists(/databases/$(database)/documents/donations/$(donationId)) &&
+        get(/databases/$(database)/documents/donations/$(donationId)).data.assignedVolunteerId == request.auth.uid;
     }
 
     // Health / connection test doc
@@ -87,9 +107,32 @@ service cloud.firestore {
         (existing().userId == request.auth.uid && incoming().userId == request.auth.uid)
       );
       allow delete: if isAdmin() || (isSignedIn() && existing().userId == request.auth.uid);
+
+      // Private volunteer location & sensitive details subcollection
+      match /private/{docId} {
+        allow read, write: if isSignedIn() && (profileId == request.auth.uid || isAdmin());
+      }
     }
 
-    // Donations collection - public can read surplus listings to see food waiting on radar
+    // State machine helpers for Donations
+    function isValidStatusTransition(oldStatus, newStatus) {
+      return (
+        // Happy path transitions
+        (oldStatus == 'available' && (newStatus == 'requested' || newStatus == 'accepted')) ||
+        (oldStatus == 'requested' && newStatus == 'accepted') ||
+        (oldStatus == 'accepted' && (newStatus == 'scheduled' || newStatus == 'picked_up')) ||
+        (oldStatus == 'scheduled' && newStatus == 'picked_up') ||
+        (oldStatus == 'picked_up' && (newStatus == 'in_transit' || newStatus == 'delivered')) ||
+        (oldStatus == 'in_transit' && newStatus == 'delivered') ||
+        (oldStatus == 'delivered' && newStatus == 'completed') ||
+        // Cancellation / expiration transitions from pre-pickup states
+        ((oldStatus in ['available', 'requested', 'accepted', 'scheduled']) && (newStatus in ['cancelled', 'expired'])) ||
+        // Status remains unchanged
+        (oldStatus == newStatus)
+      );
+    }
+
+    // Donations collection
     match /donations/{donationId} {
       allow read: if true;
       
@@ -104,40 +147,66 @@ service cloud.firestore {
 
       allow update: if isSignedIn() && (
         isAdmin() ||
-        // Donor updating their own donation before pickup
+        // 1. Donor: can edit their own listing before pickup; cannot alter donorId
         (existing().donorId == request.auth.uid &&
          incoming().donorId == request.auth.uid &&
-         existing().status in ['available', 'requested', 'accepted']) ||
-        // NGO requesting or claiming the donation
+         existing().status in ['available', 'requested', 'accepted'] &&
+         incoming().status in ['available', 'requested', 'accepted', 'cancelled'] &&
+         isValidStatusTransition(existing().status, incoming().status)) ||
+        // 2. NGO: claims available or requested donation; moves available/requested -> requested/accepted
         (incoming().diff(existing()).affectedKeys().hasOnly([
           'status', 'assignedNgoId', 'assignedNgoName', 'updatedAt', 'pickupDeadline',
           'pickupDate', 'availableFrom', 'availableUntil', 'collectionDeadline', 'preferredPickupTime', 'timeZone',
           'claimLock', 'timeline', 'dropoffAddress', 'dropoffLatitude', 'dropoffLongitude'
-        ])) ||
-        // Volunteer accepting, updating progress, or cancelling assignment
+        ]) &&
+         incoming().assignedNgoId == request.auth.uid &&
+         existing().status in ['available', 'requested'] &&
+         incoming().status in ['requested', 'accepted'] &&
+         isValidStatusTransition(existing().status, incoming().status)) ||
+        // 3. Volunteer: accepts task or advances delivery progress; moves accepted/scheduled -> picked_up -> in_transit -> delivered
         (incoming().diff(existing()).affectedKeys().hasOnly([
           'status', 'assignedVolunteerId', 'assignedVolunteerName', 'assignedVolunteerPhone',
           'acceptedAt', 'pickedUpAt', 'deliveredAt', 'completedAt', 'claimLock',
           'pickupDeadline', 'pickupDate', 'availableFrom', 'availableUntil', 'collectionDeadline', 'timeZone',
           'dropoffAddress', 'dropoffLatitude', 'dropoffLongitude', 'updatedAt', 'timeline'
-        ]))
+        ]) &&
+         incoming().assignedVolunteerId == request.auth.uid &&
+         existing().status in ['accepted', 'scheduled', 'picked_up', 'in_transit'] &&
+         incoming().status in ['scheduled', 'picked_up', 'in_transit', 'delivered'] &&
+         isValidStatusTransition(existing().status, incoming().status))
       );
 
       allow delete: if isAdmin() || (isSignedIn() && existing().donorId == request.auth.uid && existing().status == 'available');
+
+      // Private contact and sensitive subcollection for this donation
+      match /private/{docId} {
+        allow read: if isSignedIn() && (
+          isDonationDonor(donationId) ||
+          isDonationNgo(donationId) ||
+          isDonationVolunteer(donationId) ||
+          isAdmin()
+        );
+        allow write: if isSignedIn() && (
+          isDonationDonor(donationId) ||
+          isAdmin()
+        );
+      }
     }
 
-    // In-app Notifications - private to recipient user
+    // In-app Notifications - private to recipient user; creation is SERVER-ONLY
     match /notifications/{notifId} {
       allow read: if isSignedIn() && (
         resource.data.userId == request.auth.uid ||
         (resource.data.recipientUserId != null && resource.data.recipientUserId == request.auth.uid) ||
         isAdmin()
       );
-      allow create: if isSignedIn();
+      // Deny client writes: creations must be executed server-side
+      allow create: if false;
+      // Users can only mark-read their own notifications
       allow update: if isSignedIn() && (
-        resource.data.userId == request.auth.uid ||
-        (resource.data.recipientUserId != null && resource.data.recipientUserId == request.auth.uid) ||
-        isAdmin()
+        (resource.data.userId == request.auth.uid ||
+         (resource.data.recipientUserId != null && resource.data.recipientUserId == request.auth.uid)) &&
+        incoming().diff(existing()).affectedKeys().hasOnly(['read', 'readAt', 'deliveryStatus'])
       );
       allow delete: if isSignedIn() && (
         resource.data.userId == request.auth.uid ||
@@ -146,23 +215,29 @@ service cloud.firestore {
       );
     }
 
-    // Impact Records - public impact data
+    // Impact Records - public impact data; creation & mutation is SERVER-ONLY
     match /impactRecords/{recordId} {
       allow read: if true;
-      allow create: if isSignedIn();
-      allow update, delete: if isAdmin();
+      allow write: if false; // server-only writes
     }
 
-    // Audit Logs - admin only
+    // Audit Logs - admin only read; creation & mutation is SERVER-ONLY
     match /auditLogs/{logId} {
       allow read: if isAdmin();
-      allow create: if isSignedIn();
-      allow update, delete: if false; // immutable audit records
+      allow write: if false; // server-only writes
     }
 
-    // Live Tracking Sessions - restricted to active volunteer & participants
+    // Live Tracking Sessions - restricted to donation participants (donor, assigned NGO, assigned volunteer, admin)
     match /trackingSessions/{donationId} {
-      allow read: if isSignedIn();
+      allow read: if isSignedIn() && (
+        resource.data.volunteerId == request.auth.uid ||
+        resource.data.donorId == request.auth.uid ||
+        resource.data.ngoId == request.auth.uid ||
+        isDonationDonor(donationId) ||
+        isDonationNgo(donationId) ||
+        isDonationVolunteer(donationId) ||
+        isAdmin()
+      );
       allow create, update: if isSignedIn() && (
         incoming().volunteerId == request.auth.uid ||
         isAdmin()
@@ -173,12 +248,17 @@ service cloud.firestore {
       );
     }
 
-    // QR & PIN Verification Records - restricted to authenticated participants
+    // QR & PIN Verification Records
+    // Donor can read pickup verification for their donation; assigned NGO can read delivery verification;
+    // Volunteers can read neither!
+    // All writes are SERVER-ONLY (deny client writes).
     match /verifications/{donationId} {
-      allow read: if isSignedIn();
-      allow create: if isSignedIn();
-      allow update: if isSignedIn();
-      allow delete: if isAdmin();
+      allow read: if isSignedIn() && (
+        isDonationDonor(donationId) ||
+        isDonationNgo(donationId) ||
+        isAdmin()
+      );
+      allow write: if false; // server-only writes!
     }
   }
 }

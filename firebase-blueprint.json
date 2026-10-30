@@ -71,6 +71,14 @@
         "address": { "type": "string", "maxLength": 256 },
         "city": { "type": "string", "maxLength": 64 },
         "capacityDailyMeals": { "type": "number" },
+        "latitude": { "type": "number" },
+        "longitude": { "type": "number" },
+        "acceptedCategories": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "hasRefrigeration": { "type": "boolean" },
+        "operatingHours": { "type": "string", "maxLength": 128 },
         "verificationStatus": { "type": "string", "enum": ["pending", "verified", "rejected"] },
         "verificationNotes": { "type": "string", "maxLength": 512 },
         "documentUrl": { "type": "string", "maxLength": 1024 },
@@ -148,6 +156,26 @@
         "timestamp": { "type": "string" }
       },
       "required": ["action", "performedBy", "timestamp"]
+    },
+    "VerificationRecord": {
+      "title": "VerificationRecord",
+      "description": "Server-managed cryptographic tokens and one-time PINs for handover verification",
+      "type": "object",
+      "properties": {
+        "donationId": { "type": "string", "maxLength": 128 },
+        "pickupToken": { "type": "string", "maxLength": 64 },
+        "deliveryToken": { "type": "string", "maxLength": 64 },
+        "pickupPin": { "type": "string", "maxLength": 16 },
+        "deliveryPin": { "type": "string", "maxLength": 16 },
+        "pickupUsed": { "type": "boolean" },
+        "deliveryUsed": { "type": "boolean" },
+        "pickupAttempts": { "type": "number" },
+        "deliveryAttempts": { "type": "number" },
+        "lastAttemptAt": { "type": "string" },
+        "createdAt": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["donationId", "pickupToken", "deliveryToken", "pickupPin", "deliveryPin", "pickupUsed", "deliveryUsed"]
     }
   },
   "firestore": {
@@ -182,6 +210,10 @@
     "/admins/{adminId}": {
       "schema": { "$ref": "#/entities/User" },
       "description": "Admin presence documents for secure role validation"
+    },
+    "/verifications/{donationId}": {
+      "schema": { "$ref": "#/entities/VerificationRecord" },
+      "description": "Server-only cryptographic verification records and PINs"
     }
   }
 }

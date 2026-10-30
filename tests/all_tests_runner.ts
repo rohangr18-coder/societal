@@ -1,8 +1,8 @@
 /**
  * Consolidated Fast Test Runner
  * Runs all validation suites sequentially within a single Node.js process,
- * eliminating the overhead of 13 separate Node/TypeScript VM cold-starts.
  */
+process.env.NODE_ENV = 'test';
 
 async function main() {
   console.log('🚀 Running Consolidated ResQBite Test Runner...\n');
@@ -23,6 +23,7 @@ async function main() {
     './pickup_countdown_timer_validation.ts',
     './impact_recharts_barchart_validation.ts',
     './impact_export_validation.ts',
+    './firestore_security_rules_validation.ts',
   ];
 
   for (const file of testFiles) {
@@ -38,7 +39,7 @@ async function main() {
   }
 
   const durationSec = ((Date.now() - startTime) / 1000).toFixed(2);
-  console.log(`\n🎉 ALL 13 TEST SUITES PASSED SUCCESSFULLY in ${durationSec}s!`);
+  console.log(`\n🎉 ALL ${testFiles.length} TEST SUITES PASSED SUCCESSFULLY in ${durationSec}s!`);
 }
 
 main().catch((err) => {

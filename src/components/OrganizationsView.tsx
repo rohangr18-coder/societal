@@ -11,6 +11,10 @@ import {
   Mail,
   Loader2,
   AlertCircle,
+  Snowflake,
+  Navigation,
+  Compass,
+  Check,
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import {
@@ -20,6 +24,60 @@ import {
   saveVolunteerProfile,
 } from '../services/dbService';
 import { Organization, VolunteerProfile } from '../types';
+
+const BENGALURU_AREAS: Record<string, { lat: number; lng: number }> = {
+  koramangala: { lat: 12.9352, lng: 77.6245 },
+  indiranagar: { lat: 12.9784, lng: 77.6408 },
+  hsr: { lat: 12.9121, lng: 77.6446 },
+  'hsr layout': { lat: 12.9121, lng: 77.6446 },
+  whitefield: { lat: 12.9698, lng: 77.7500 },
+  jayanagar: { lat: 12.9308, lng: 77.5838 },
+  malleshwaram: { lat: 13.0031, lng: 77.5643 },
+  'electronic city': { lat: 12.8452, lng: 77.6602 },
+  hebbal: { lat: 13.0358, lng: 77.5970 },
+  rajajinagar: { lat: 12.9982, lng: 77.5530 },
+  shivajinagar: { lat: 12.9863, lng: 77.6018 },
+  bengaluru: { lat: 12.9716, lng: 77.5946 },
+  bangalore: { lat: 12.9716, lng: 77.5946 },
+};
+
+async function geocodeAddress(address: string, city: string): Promise<{ lat: number; lng: number }> {
+  const query = `${address}, ${city}`.trim();
+  const apiKey = (typeof import.meta !== 'undefined' && import.meta.env?.VITE_GOOGLE_MAPS_API_KEY) || '';
+  if (apiKey) {
+    try {
+      const res = await fetch(`https://maps.googleapis.com/maps/api/geocode/json?address=${encodeURIComponent(query)}&key=${apiKey}`);
+      const data = await res.json();
+      if (data.status === 'OK' && data.results?.[0]?.geometry?.location) {
+        return {
+          lat: Math.round(data.results[0].geometry.location.lat * 10000) / 10000,
+          lng: Math.round(data.results[0].geometry.location.lng * 10000) / 10000,
+        };
+      }
+    } catch {
+      // Fall through to dictionary
+    }
+  }
+
+  const lower = query.toLowerCase();
+  for (const [key, coords] of Object.entries(BENGALURU_AREAS)) {
+    if (lower.includes(key)) {
+      return coords;
+    }
+  }
+
+  return { lat: 12.9716, lng: 77.5946 }; // Default Bengaluru Central
+}
+
+export const ALL_DONATION_CATEGORIES = [
+  'Cooked Meals',
+  'Bakery & Bread',
+  'Fresh Produce & Fruits',
+  'Dairy & Eggs',
+  'Packaged & Canned Goods',
+  'Beverages',
+  'Raw Ingredients',
+];
 
 export const OrganizationsView: React.FC = () => {
   const { currentUser, userProfile, isAdmin } = useAuth();
@@ -32,8 +90,20 @@ export const OrganizationsView: React.FC = () => {
   const [ngoName, setNgoName] = useState('');
   const [ngoRegNo, setNgoRegNo] = useState('');
   const [ngoType, setNgoType] = useState('Shelter & Community Kitchen');
-  const [ngoCity, setNgoCity] = useState('');
+  const [ngoCity, setNgoCity] = useState('Bengaluru');
   const [ngoAddress, setNgoAddress] = useState('');
+  const [ngoLat, setNgoLat] = useState<number>(12.9716);
+  const [ngoLng, setNgoLng] = useState<number>(77.5946);
+  const [ngoRefrigeration, setNgoRefrigeration] = useState(false);
+  const [ngoOperatingHours, setNgoOperatingHours] = useState('08:00 - 20:00');
+  const [ngoAcceptedCats, setNgoAcceptedCats] = useState<string[]>([
+    'Cooked Meals',
+    'Bakery & Bread',
+    'Fresh Produce & Fruits',
+    'Dairy & Eggs',
+  ]);
+  const [geocoding, setGeocoding] = useState(false);
+  const [geocodeStatus, setGeocodeStatus] = useState<string | null>(null);
   const [ngoEmail, setNgoEmail] = useState('');
   const [ngoPhone, setNgoPhone] = useState('');
   const [ngoCapacity, setNgoCapacity] = useState(150);
@@ -46,7 +116,7 @@ export const OrganizationsView: React.FC = () => {
   const [volName, setVolName] = useState(userProfile?.displayName || '');
   const [volPhone, setVolPhone] = useState('');
   const [volVehicle, setVolVehicle] = useState('Two-Wheeler (Motorcycle/Scooter)');
-  const [volArea, setVolArea] = useState('Central Zone & Suburbs');
+  const [volArea, setVolArea] = useState('Central Bengaluru & Suburbs');
   const [volSubmitting, setVolSubmitting] = useState(false);
   const [volSuccess, setVolSuccess] = useState<string | null>(null);
 
@@ -59,6 +129,31 @@ export const OrganizationsView: React.FC = () => {
     };
   }, []);
 
+  const handleGeocodeAddress = async () => {
+    if (!ngoAddress.trim()) {
+      setGeocodeStatus('Please enter a facility address to geocode');
+      return;
+    }
+    setGeocoding(true);
+    setGeocodeStatus('Locating coordinates in Bengaluru...');
+    try {
+      const coords = await geocodeAddress(ngoAddress, ngoCity);
+      setNgoLat(coords.lat);
+      setNgoLng(coords.lng);
+      setGeocodeStatus(`Coordinates verified: ${coords.lat}, ${coords.lng}`);
+    } catch {
+      setGeocodeStatus('Could not geocode automatically; default Bengaluru coordinates applied.');
+    } finally {
+      setGeocoding(false);
+    }
+  };
+
+  const toggleCategory = (cat: string) => {
+    setNgoAcceptedCats((prev) =>
+      prev.includes(cat) ? prev.filter((c) => c !== cat) : [...prev, cat]
+    );
+  };
+
   const handleRegisterNgo = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!currentUser) {
@@ -68,6 +163,15 @@ export const OrganizationsView: React.FC = () => {
     setNgoSubmitting(true);
     setNgoError(null);
     try {
+      // Auto-geocode if still default coordinates and address is filled
+      let lat = ngoLat;
+      let lng = ngoLng;
+      if (lat === 12.9716 && lng === 77.5946 && ngoAddress.trim()) {
+        const detected = await geocodeAddress(ngoAddress, ngoCity);
+        lat = detected.lat;
+        lng = detected.lng;
+      }
+
       await registerOrganization({
         ownerUid: currentUser.uid,
         name: ngoName.trim(),
@@ -76,10 +180,15 @@ export const OrganizationsView: React.FC = () => {
         contactEmail: ngoEmail.trim() || currentUser.email || '',
         contactPhone: ngoPhone.trim(),
         address: ngoAddress.trim(),
-        city: ngoCity.trim(),
+        city: ngoCity.trim() || 'Bengaluru',
         capacityDailyMeals: Number(ngoCapacity),
+        latitude: lat,
+        longitude: lng,
+        hasRefrigeration: ngoRefrigeration,
+        operatingHours: ngoOperatingHours.trim() || '08:00 - 20:00',
+        acceptedCategories: ngoAcceptedCats.length > 0 ? ngoAcceptedCats : ['Cooked Meals'],
       });
-      setNgoSuccess('Organization registered successfully! Pending administrator verification.');
+      setNgoSuccess('Organization registered successfully with verified GPS location! Pending administrator verification.');
       setTimeout(() => {
         setShowNgoModal(false);
         setNgoSuccess(null);

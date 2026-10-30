@@ -93,6 +93,11 @@ export interface Organization {
   address: string;
   city: string;
   capacityDailyMeals: number;
+  latitude?: number;
+  longitude?: number;
+  acceptedCategories?: string[];
+  hasRefrigeration?: boolean;
+  operatingHours?: string;
   verificationStatus: 'pending' | 'verified' | 'rejected';
   verificationNotes?: string;
   documentUrl?: string;
@@ -236,15 +241,31 @@ export interface LiveTrackingSession {
   lastUpdatedAt: string;
 }
 
+export interface MatchBreakdown {
+  distanceKm: number | null;
+  distanceScore: number;
+  categoryMatch: boolean;
+  refrigerationMatch: boolean;
+  dietaryScore: number;
+  capacityMatch: boolean;
+  capacityRatio: number;
+  capacityScore: number;
+  deadlineMatch: boolean;
+  urgencyScore: number;
+  estimatedTravelMinutes: number | null;
+  reasons: string[];
+}
+
 export interface SmartMatchResult {
   ngo: Organization;
   donation: Donation;
   score: number;
-  distanceKm: number;
+  distanceKm: number | null;
   categoryMatch: boolean;
   capacityMatch: boolean;
   deadlineMatch: boolean;
   reasons: string[];
   summaryExplanation: string;
+  breakdown?: MatchBreakdown;
 }
 
