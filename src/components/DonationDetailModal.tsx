@@ -31,6 +31,7 @@ import { SmartMatchModal } from './SmartMatchModal';
 import { RescueTimeline } from './RescueTimeline';
 import { PickupCountdownTimer } from './PickupCountdownTimer';
 import { useLanguage } from '../context/LanguageContext';
+import { isDonationExpired } from '../utils/foodSafety';
 
 interface DonationDetailModalProps {
   donation: Donation | null;
@@ -60,6 +61,10 @@ export const DonationDetailModal: React.FC<DonationDetailModalProps> = ({ donati
   const isOwner = currentUser?.uid === donation.donorId;
   const isAssignedNgo = currentUser?.uid === donation.assignedNgoId;
   const isAssignedVolunteer = currentUser?.uid === donation.assignedVolunteerId;
+
+  // Food safety expiration evaluation
+  const expirationCheck = isDonationExpired(donation);
+  const isExpired = donation.status === 'expired' || expirationCheck.isExpired;
 
   // Handle NGO Claim with transactional duplicate-prevention
   const handleNgoClaim = async () => {
@@ -215,6 +220,7 @@ export const DonationDetailModal: React.FC<DonationDetailModalProps> = ({ donati
           <PickupCountdownTimer
             pickupDeadline={donation.pickupDeadline}
             collectionDeadline={donation.collectionDeadline}
+            safeUntil={donation.safeUntil}
             pickupDate={donation.pickupDate}
             timeZone={donation.timeZone}
             variant="banner"
@@ -231,6 +237,7 @@ export const DonationDetailModal: React.FC<DonationDetailModalProps> = ({ donati
                 <PickupCountdownTimer
                   pickupDeadline={donation.pickupDeadline}
                   collectionDeadline={donation.collectionDeadline}
+                  safeUntil={donation.safeUntil}
                   pickupDate={donation.pickupDate}
                   timeZone={donation.timeZone}
                   variant="inline"
@@ -502,16 +509,29 @@ export const DonationDetailModal: React.FC<DonationDetailModalProps> = ({ donati
           </div>
 
           <div className="flex items-center gap-2">
-            {/* NGO Claim Action */}
-            {donation.status === 'available' && (isNgo || isAdmin) && (
-              <button
-                onClick={handleNgoClaim}
-                disabled={loadingAction}
-                className="bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs px-5 py-2.5 rounded-xl shadow-xs transition-colors flex items-center gap-2 cursor-pointer disabled:opacity-50"
+            {/* Expired Guard Banner */}
+            {isExpired ? (
+              <div
+                data-testid="expired-item-block"
+                className="flex items-center gap-2 px-3.5 py-2 rounded-xl bg-red-100 text-red-900 border border-red-300 text-xs font-bold shadow-xs"
               >
-                {loadingAction ? <Loader2 className="w-4 h-4 animate-spin" /> : <Building2 className="w-4 h-4" />}
-                Claim / Request for My NGO
-              </button>
+                <AlertTriangle className="w-4 h-4 text-red-600 shrink-0" />
+                <span>Food Safety Guard: Item has expired and can no longer be claimed.</span>
+              </div>
+            ) : (
+              <>
+                {/* NGO Claim Action */}
+                {donation.status === 'available' && (isNgo || isAdmin) && (
+                  <button
+                    onClick={handleNgoClaim}
+                    disabled={loadingAction}
+                    className="bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs px-5 py-2.5 rounded-xl shadow-xs transition-colors flex items-center gap-2 cursor-pointer disabled:opacity-50"
+                  >
+                    {loadingAction ? <Loader2 className="w-4 h-4 animate-spin" /> : <Building2 className="w-4 h-4" />}
+                    Claim / Request for My NGO
+                  </button>
+                )}
+              </>
             )}
 
             {/* Donor Accept Request */}

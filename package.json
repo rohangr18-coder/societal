@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite --port=3000 --host=0.0.0.0",
-    "build": "vite build && esbuild server/geminiApi.ts server/app.ts --format=esm --platform=node --outdir=server",
+    "build": "vite build && esbuild server/geminiApi.ts server/app.ts server/expirationJob.ts --format=esm --platform=node --outdir=server",
     "start": "tsx server.ts",
     "test": "tsx tests/all_tests_runner.ts",
     "preview": "vite preview",

@@ -24,6 +24,7 @@ async function main() {
     './impact_recharts_barchart_validation.ts',
     './impact_export_validation.ts',
     './firestore_security_rules_validation.ts',
+    './scheduled_expiration_job_validation.ts',
   ];
 
   for (const file of testFiles) {

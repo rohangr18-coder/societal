@@ -31,6 +31,7 @@ import {
   LiveTrackingSession,
 } from '../types';
 import { calculateDistanceKm } from '../utils/geo';
+import { computeSafeUntil, isDonationExpired } from '../utils/foodSafety';
 import { dispatchFcmToNearbyVolunteers, dispatchDonationLifecyclePush } from './fcmService';
 
 // ----------------------------------------------------
@@ -288,9 +289,22 @@ export async function createDonation(data: Omit<Donation, 'id' | 'createdAt' | '
       note: 'Donation created and listed for rescue.',
     };
 
+    const preparedAt = data.preparedAt || now;
+    const computedSafety = computeSafeUntil({
+      category: data.category,
+      storageType: data.storageType,
+      preparedAt,
+      createdAt: now,
+      pickupDeadline: data.pickupDeadline,
+      collectionDeadline: data.collectionDeadline,
+      safeUntil: data.safeUntil,
+    });
+
     const newDonation: Donation = {
       ...data,
       id: donationRef.id,
+      preparedAt,
+      safeUntil: data.safeUntil || computedSafety.safeUntilIso,
       timeZone: data.timeZone || 'Asia/Kolkata',
       status: 'available',
       createdAt: now,
@@ -364,6 +378,15 @@ export async function claimDonationByNgo(
           success: false,
           code: 'ALREADY_CLAIMED' as const,
           message: `This donation is no longer available (current status: ${donation.status}). It has already been claimed by another organization.`,
+        };
+      }
+
+      // Food safety check: block claims on expired items
+      if (isDonationExpired(donation).isExpired) {
+        return {
+          success: false,
+          code: 'ERROR' as const,
+          message: 'Food Safety Notice: This donation has passed its safe consumption threshold and can no longer be claimed.',
         };
       }
 
@@ -472,17 +495,13 @@ export async function acceptDonationByVolunteer(
         };
       }
 
-      // Strict expiration check: reject if collection deadline has already passed
-      const deadlineStr = donation.collectionDeadline || donation.pickupDeadline;
-      if (deadlineStr) {
-        const deadlineTime = new Date(deadlineStr).getTime();
-        if (!isNaN(deadlineTime) && deadlineTime < Date.now()) {
-          return {
-            success: false,
-            code: 'EXPIRED' as const,
-            message: 'This collection request has expired and cannot be accepted.',
-          };
-        }
+      // Strict food safety expiration check: reject if safeUntil threshold or collection deadline has passed
+      if (isDonationExpired(donation).isExpired) {
+        return {
+          success: false,
+          code: 'EXPIRED' as const,
+          message: 'Food Safety Alert: This food collection request has passed its safe consumption threshold and cannot be accepted.',
+        };
       }
 
       // Check collision: if another volunteer already claimed

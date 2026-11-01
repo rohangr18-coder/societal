@@ -66,6 +66,9 @@ export interface Donation {
   unit: string;
   servings?: number;
   prepTime?: string;
+  preparedAt?: string; // ISO timestamp when food was cooked/prepared
+  safeUntil?: string; // Food safety threshold (computed from category + storage type)
+  expiredAt?: string; // ISO timestamp when marked expired
   pickupDeadline: string;
   // Accurate Pickup Scheduling & Time Zone
   pickupDate?: string; // YYYY-MM-DD

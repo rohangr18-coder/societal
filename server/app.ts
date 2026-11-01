@@ -11,6 +11,12 @@ import {
   handleMultilingualGuide,
   handleMithraChat,
 } from './geminiApi.js';
+import {
+  scanAndExpireOverdueDonations,
+  startExpirationCron,
+  stopExpirationCron,
+  getExpirationJobStatus,
+} from './expirationJob.js';
 
 export const app = express();
 
@@ -251,6 +257,40 @@ apiRouter.get('/notifications/fcm-status', (req: Request, res: Response) => {
     timestamp: new Date().toISOString(),
   });
 });
+
+// GET /api/jobs/expiration-status
+// Inspect current state, interval, and metrics of the scheduled food safety monitor
+apiRouter.get('/jobs/expiration-status', (req: Request, res: Response) => {
+  const status = getExpirationJobStatus();
+  sendJson(res, 200, {
+    status: 'ok',
+    ...status,
+    timestamp: new Date().toISOString(),
+  });
+});
+
+// POST /api/jobs/expire-donations & GET /api/jobs/expire-donations
+// Scheduled scan trigger: can be invoked by Vercel Cron, external cron webhook, or administrator
+const handleExpireDonationsJob = async (req: Request, res: Response) => {
+  try {
+    const customTime = req.body?.timestamp || req.query?.timestamp;
+    const nowMs = customTime ? new Date(String(customTime)).getTime() : Date.now();
+    const effectiveNow = isNaN(nowMs) ? Date.now() : nowMs;
+
+    const result = await scanAndExpireOverdueDonations(effectiveNow);
+    sendJson(res, 200, {
+      ...result,
+      triggeredBy: (req as any).user?.uid || 'scheduler_or_webhook',
+    });
+  } catch (error: any) {
+    console.error('[Jobs API] Expire donations failed:', error);
+    sendJson(res, 500, { error: error.message || 'Internal Server Error' });
+  }
+};
+
+apiRouter.post('/jobs/expire-donations', handleExpireDonationsJob);
+apiRouter.get('/jobs/expire-donations', handleExpireDonationsJob);
+apiRouter.post('/jobs/cleanup-expired', handleExpireDonationsJob);
 
 // ----------------------------------------------------
 // Authenticated Protected Endpoints (requireAuth)
@@ -900,5 +940,14 @@ apiRouter.post('/verify/delivery', requireAuth, verificationLimiter, async (req:
 // Mount router on /api and root
 app.use('/api', apiRouter);
 app.use(apiRouter);
+
+// Start scheduled background expiration monitoring in server environments
+if (process.env.NODE_ENV !== 'test' && !process.env.DISABLE_CRON) {
+  try {
+    startExpirationCron();
+  } catch (cronErr) {
+    console.warn('[Expiration Job] Cron start notice:', cronErr);
+  }
+}
 
 export default app;

@@ -4,6 +4,7 @@ import { Clock, Flame, AlertTriangle, ShieldCheck, Timer, Sparkles } from 'lucid
 export interface PickupCountdownTimerProps {
   pickupDeadline: string;
   collectionDeadline?: string;
+  safeUntil?: string;
   pickupDate?: string;
   timeZone?: string;
   variant?: 'banner' | 'card' | 'inline' | 'compact';
@@ -36,77 +37,90 @@ export interface CountdownState {
 export function parsePickupDeadline(
   pickupDeadline?: string,
   collectionDeadline?: string,
-  pickupDate?: string
+  pickupDate?: string,
+  safeUntil?: string
 ): number | null {
-  // 1. Try collectionDeadline directly
+  const candidateTimestamps: number[] = [];
+
+  // 1. Try safeUntil food safety threshold
+  if (safeUntil) {
+    const s = new Date(safeUntil).getTime();
+    if (!isNaN(s)) candidateTimestamps.push(s);
+  }
+
+  // 2. Try collectionDeadline directly
   if (collectionDeadline) {
     const t = new Date(collectionDeadline).getTime();
-    if (!isNaN(t)) return t;
+    if (!isNaN(t)) candidateTimestamps.push(t);
   }
 
-  if (!pickupDeadline) return null;
-
-  // 2. Direct ISO or date string parse
-  const directTime = new Date(pickupDeadline).getTime();
-  if (!isNaN(directTime)) {
-    return directTime;
-  }
-
-  const clean = pickupDeadline.trim();
-
-  // 3. Match format like "2026-10-30 before 18:00" or "2026-10-30 18:00:00"
-  const dateRegex = /(\d{4}-\d{2}-\d{2})/;
-  const timeRegex = /(\d{1,2}):(\d{2})(?::(\d{2}))?\s*(AM|PM)?/i;
-
-  const dateMatch = clean.match(dateRegex);
-  const timeMatch = clean.match(timeRegex);
-
-  const effectiveDate = dateMatch ? dateMatch[1] : pickupDate;
-
-  if (effectiveDate && timeMatch) {
-    let hour = parseInt(timeMatch[1], 10);
-    const minute = parseInt(timeMatch[2], 10);
-    const second = timeMatch[3] ? parseInt(timeMatch[3], 10) : 0;
-    const ampm = timeMatch[4]?.toUpperCase();
-
-    if (ampm === 'PM' && hour < 12) hour += 12;
-    if (ampm === 'AM' && hour === 12) hour = 0;
-
-    const isoStr = `${effectiveDate}T${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}:${String(second).padStart(2, '0')}`;
-    const t = new Date(isoStr).getTime();
-    if (!isNaN(t)) return t;
-  }
-
-  // 4. Handle "Today before 6:00 PM" or "Today 5 PM" or "Tomorrow before 12:00 PM"
-  const isToday = /today/i.test(clean);
-  const isTomorrow = /tomorrow/i.test(clean);
-
-  if ((isToday || isTomorrow) && (timeMatch || /(\d{1,2})\s*(AM|PM)/i.test(clean))) {
-    const now = new Date();
-    if (isTomorrow) {
-      now.setDate(now.getDate() + 1);
-    }
-
-    let hour = 18; // default 6 PM
-    let minute = 0;
-
-    if (timeMatch) {
-      hour = parseInt(timeMatch[1], 10);
-      minute = parseInt(timeMatch[2], 10);
-      const ampm = timeMatch[4]?.toUpperCase();
-      if (ampm === 'PM' && hour < 12) hour += 12;
-      if (ampm === 'AM' && hour === 12) hour = 0;
+  if (pickupDeadline) {
+    // 3. Direct ISO or date string parse
+    const directTime = new Date(pickupDeadline).getTime();
+    if (!isNaN(directTime)) {
+      candidateTimestamps.push(directTime);
     } else {
-      const simpleMatch = clean.match(/(\d{1,2})\s*(AM|PM)/i);
-      if (simpleMatch) {
-        hour = parseInt(simpleMatch[1], 10);
-        if (simpleMatch[2].toUpperCase() === 'PM' && hour < 12) hour += 12;
-        if (simpleMatch[2].toUpperCase() === 'AM' && hour === 12) hour = 0;
+      const clean = pickupDeadline.trim();
+
+      // 4. Match format like "2026-10-30 before 18:00" or "2026-10-30 18:00:00"
+      const dateRegex = /(\d{4}-\d{2}-\d{2})/;
+      const timeRegex = /(\d{1,2}):(\d{2})(?::(\d{2}))?\s*(AM|PM)?/i;
+
+      const dateMatch = clean.match(dateRegex);
+      const timeMatch = clean.match(timeRegex);
+
+      const effectiveDate = dateMatch ? dateMatch[1] : pickupDate;
+
+      if (effectiveDate && timeMatch) {
+        let hour = parseInt(timeMatch[1], 10);
+        const minute = parseInt(timeMatch[2], 10);
+        const second = timeMatch[3] ? parseInt(timeMatch[3], 10) : 0;
+        const ampm = timeMatch[4]?.toUpperCase();
+
+        if (ampm === 'PM' && hour < 12) hour += 12;
+        if (ampm === 'AM' && hour === 12) hour = 0;
+
+        const isoStr = `${effectiveDate}T${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}:${String(second).padStart(2, '0')}`;
+        const t = new Date(isoStr).getTime();
+        if (!isNaN(t)) candidateTimestamps.push(t);
+      } else {
+        // 5. Handle "Today before 6:00 PM" or "Today 5 PM" or "Tomorrow before 12:00 PM"
+        const isToday = /today/i.test(clean);
+        const isTomorrow = /tomorrow/i.test(clean);
+
+        if ((isToday || isTomorrow) && (timeMatch || /(\d{1,2})\s*(AM|PM)/i.test(clean))) {
+          const now = new Date();
+          if (isTomorrow) {
+            now.setDate(now.getDate() + 1);
+          }
+
+          let hour = 18; // default 6 PM
+          let minute = 0;
+
+          if (timeMatch) {
+            hour = parseInt(timeMatch[1], 10);
+            minute = parseInt(timeMatch[2], 10);
+            const ampm = timeMatch[4]?.toUpperCase();
+            if (ampm === 'PM' && hour < 12) hour += 12;
+            if (ampm === 'AM' && hour === 12) hour = 0;
+          } else {
+            const simpleMatch = clean.match(/(\d{1,2})\s*(AM|PM)/i);
+            if (simpleMatch) {
+              hour = parseInt(simpleMatch[1], 10);
+              if (simpleMatch[2].toUpperCase() === 'PM' && hour < 12) hour += 12;
+              if (simpleMatch[2].toUpperCase() === 'AM' && hour === 12) hour = 0;
+            }
+          }
+
+          now.setHours(hour, minute, 0, 0);
+          candidateTimestamps.push(now.getTime());
+        }
       }
     }
+  }
 
-    now.setHours(hour, minute, 0, 0);
-    return now.getTime();
+  if (candidateTimestamps.length > 0) {
+    return Math.min(...candidateTimestamps);
   }
 
   return null;
@@ -206,6 +220,7 @@ export function computeCountdown(
 export const PickupCountdownTimer: React.FC<PickupCountdownTimerProps> = ({
   pickupDeadline,
   collectionDeadline,
+  safeUntil,
   pickupDate,
   timeZone,
   variant = 'banner',
@@ -225,8 +240,8 @@ export const PickupCountdownTimer: React.FC<PickupCountdownTimerProps> = ({
 
   // Parse deadline timestamp
   const targetTimestamp = useMemo(() => {
-    return parsePickupDeadline(pickupDeadline, collectionDeadline, pickupDate);
-  }, [pickupDeadline, collectionDeadline, pickupDate]);
+    return parsePickupDeadline(pickupDeadline, collectionDeadline, pickupDate, safeUntil);
+  }, [pickupDeadline, collectionDeadline, pickupDate, safeUntil]);
 
   // Compute live countdown state
   const countdown = useMemo(() => {

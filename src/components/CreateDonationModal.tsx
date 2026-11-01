@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import {
   X,
   Sparkles,
@@ -8,6 +8,7 @@ import {
   AlertCircle,
   Thermometer,
   ShieldAlert,
+  ShieldCheck,
   CheckCircle2,
   Loader2,
   Navigation,
@@ -17,6 +18,7 @@ import {
 import { useAuth } from '../context/AuthContext';
 import { createDonation } from '../services/dbService';
 import { GoogleRescueMap } from './GoogleRescueMap';
+import { computeSafeUntil } from '../utils/foodSafety';
 
 interface CreateDonationModalProps {
   isOpen: boolean;
@@ -61,6 +63,7 @@ export const CreateDonationModal: React.FC<CreateDonationModalProps> = ({ isOpen
   const [unit, setUnit] = useState('servings');
   const [servings, setServings] = useState<number>(10);
   const [prepTime, setPrepTime] = useState('');
+  const [preparedAt, setPreparedAt] = useState<string>(new Date().toISOString());
   
   // Dedicated Pickup Schedule states
   const [pickupDate, setPickupDate] = useState(todayStr);
@@ -76,6 +79,18 @@ export const CreateDonationModal: React.FC<CreateDonationModalProps> = ({ isOpen
   const [longitude, setLongitude] = useState(77.2090);
   const [storageType, setStorageType] = useState(STORAGE_TYPES[0]);
   const [packaging, setPackaging] = useState(PACKAGING_OPTIONS[0]);
+
+  // Compute live safeUntil threshold from category + storage type
+  const foodSafetyCalc = useMemo(() => {
+    return computeSafeUntil({
+      category,
+      storageType,
+      preparedAt,
+      collectionDeadline: `${pickupDate}T${collectionDeadline || availableUntil}:00`,
+      pickupDeadline: pickupDeadline.trim() || `${pickupDate} before ${collectionDeadline || availableUntil} (${timeZone})`,
+    });
+  }, [category, storageType, preparedAt, pickupDate, collectionDeadline, availableUntil, pickupDeadline, timeZone]);
+
   const [allergens, setAllergens] = useState('');
   const [imageUrl, setImageUrl] = useState('');
 
@@ -263,6 +278,8 @@ export const CreateDonationModal: React.FC<CreateDonationModalProps> = ({ isOpen
         unit,
         servings: Number(servings) || Number(quantity),
         prepTime,
+        preparedAt: new Date(preparedAt).toISOString(),
+        safeUntil: foodSafetyCalc.safeUntilIso,
         pickupDeadline: formattedDeadline,
         pickupDate,
         availableFrom,
@@ -580,6 +597,64 @@ export const CreateDonationModal: React.FC<CreateDonationModalProps> = ({ isOpen
                   <option key={p} value={p}>{p}</option>
                 ))}
               </select>
+            </div>
+          </div>
+
+          {/* Live Food Safety & safeUntil Automation Banner */}
+          <div
+            data-testid="food-safety-preview-banner"
+            className={`p-3.5 rounded-2xl border text-xs transition-colors ${
+              foodSafetyCalc.isCookedOutsideHolding
+                ? 'bg-amber-50/90 border-amber-300 text-amber-950'
+                : 'bg-emerald-50/70 border-emerald-200 text-emerald-950'
+            }`}
+          >
+            <div className="flex items-start gap-2.5">
+              <div
+                className={`p-1.5 rounded-xl shrink-0 mt-0.5 ${
+                  foodSafetyCalc.isCookedOutsideHolding
+                    ? 'bg-amber-200/80 text-amber-800'
+                    : 'bg-emerald-200/80 text-emerald-800'
+                }`}
+              >
+                {foodSafetyCalc.isCookedOutsideHolding ? (
+                  <AlertCircle className="w-4 h-4 text-amber-700" />
+                ) : (
+                  <ShieldCheck className="w-4 h-4 text-emerald-700" />
+                )}
+              </div>
+
+              <div className="space-y-1 flex-1">
+                <div className="flex flex-wrap items-center justify-between gap-1.5">
+                  <span className="font-bold uppercase tracking-wider text-[11px]">
+                    {foodSafetyCalc.isCookedOutsideHolding
+                      ? '⚠️ 2-Hour Food Safety Rule Enforced'
+                      : '🛡️ Food Safety Window Active'}
+                  </span>
+                  <span className="font-mono font-bold bg-white/80 px-2 py-0.5 rounded-md border border-stone-200 text-stone-800">
+                    Max Safe Window: {foodSafetyCalc.hoursAllowed}h
+                  </span>
+                </div>
+
+                <p className="text-[11px] leading-relaxed text-stone-700">
+                  {foodSafetyCalc.ruleDescription}
+                </p>
+
+                <div className="text-[10px] text-stone-500 pt-0.5 flex flex-wrap items-center gap-2">
+                  <span>
+                    Computed safeUntil:{' '}
+                    <strong className="text-stone-800">
+                      {new Date(foodSafetyCalc.safeUntilTimestamp).toLocaleTimeString([], {
+                        hour: '2-digit',
+                        minute: '2-digit',
+                      })}
+                    </strong>
+                  </span>
+                  <span className="italic">
+                    • Server scheduled job will automatically expire uncollected items past this threshold.
+                  </span>
+                </div>
+              </div>
             </div>
           </div>
 
