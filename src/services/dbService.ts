@@ -32,6 +32,11 @@ import {
 } from '../types';
 import { calculateDistanceKm } from '../utils/geo';
 import { computeSafeUntil, isDonationExpired } from '../utils/foodSafety';
+import {
+  sanitizeForFirestore,
+  validateDonationRequiredFields,
+  normalizeDonationPayload,
+} from '../utils/firestoreSanitizer';
 import { dispatchFcmToNearbyVolunteers, dispatchDonationLifecyclePush } from './fcmService';
 
 // ----------------------------------------------------
@@ -106,7 +111,7 @@ export async function createOrUpdateUserProfile(profile: Partial<UserProfile> & 
       updatedAt: new Date().toISOString(),
     };
 
-    await setDoc(doc(db, 'users', profile.uid), userDoc, { merge: true });
+    await setDoc(doc(db, 'users', profile.uid), sanitizeForFirestore(userDoc), { merge: true });
 
     // If role is volunteer, ensure volunteerProfiles entry exists
     if (role === 'volunteer') {
@@ -172,6 +177,21 @@ export function subscribeDonations(
     );
   } catch (error) {
     handleFirestoreError(error, OperationType.LIST, path);
+  }
+}
+
+/**
+ * Retrieves a single donation by ID from Firestore
+ */
+export async function getDonation(donationId: string): Promise<Donation | null> {
+  const path = `donations/${donationId}`;
+  try {
+    const donationRef = doc(db, 'donations', donationId);
+    const snap = await getDoc(donationRef);
+    if (!snap.exists()) return null;
+    return { id: snap.id, ...snap.data() } as Donation;
+  } catch (error) {
+    handleFirestoreError(error, OperationType.GET, path);
   }
 }
 
@@ -278,6 +298,12 @@ export async function notifyNearbyVolunteers(donation: Donation): Promise<number
 export async function createDonation(data: Omit<Donation, 'id' | 'createdAt' | 'updatedAt' | 'timeline'>): Promise<string> {
   const path = 'donations';
   try {
+    // 1. Strictly validate required fields before attempting Firestore mutation
+    const validation = validateDonationRequiredFields(data);
+    if (!validation.isValid) {
+      throw new Error(`Validation Error: ${validation.errors.join(' ')}`);
+    }
+
     const donationRef = doc(collection(db, 'donations'));
     const now = new Date().toISOString();
     
@@ -300,7 +326,8 @@ export async function createDonation(data: Omit<Donation, 'id' | 'createdAt' | '
       safeUntil: data.safeUntil,
     });
 
-    const newDonation: Donation = {
+    // 2. Normalize payload and recursively remove any undefined fields
+    const sanitizedDonation = normalizeDonationPayload({
       ...data,
       id: donationRef.id,
       preparedAt,
@@ -310,9 +337,9 @@ export async function createDonation(data: Omit<Donation, 'id' | 'createdAt' | '
       createdAt: now,
       updatedAt: now,
       timeline: [initialTimeline],
-    };
+    }) as Donation;
 
-    await setDoc(donationRef, newDonation);
+    await setDoc(donationRef, sanitizedDonation);
 
     // Private confirmation notification strictly isolated to the creating donor
     await sendNotification({
@@ -320,7 +347,7 @@ export async function createDonation(data: Omit<Donation, 'id' | 'createdAt' | '
       userId: data.donorId,
       recipientUserId: data.donorId,
       title: 'Donation Listed Successfully',
-      message: `Your donation "${data.foodName}" has been posted.${data.availableFrom && data.availableUntil ? ` Scheduled pickup window: ${data.availableFrom} – ${data.availableUntil} (${data.pickupDate || 'Today'}, ${newDonation.timeZone}).` : ''} Nearby volunteers are being alerted.`,
+      message: `Your donation "${data.foodName}" has been posted.${data.availableFrom && data.availableUntil ? ` Scheduled pickup window: ${data.availableFrom} – ${data.availableUntil} (${data.pickupDate || 'Today'}, ${sanitizedDonation.timeZone}).` : ''} Nearby volunteers are being alerted.`,
       type: 'system',
       link: '/dashboard',
       donationId: donationRef.id,
@@ -336,7 +363,7 @@ export async function createDonation(data: Omit<Donation, 'id' | 'createdAt' | '
     });
 
     // Automatically notify nearby eligible volunteers in real-time
-    notifyNearbyVolunteers(newDonation).catch((notifErr) => {
+    notifyNearbyVolunteers(sanitizedDonation).catch((notifErr) => {
       console.warn('Async volunteer notification warning:', notifErr);
     });
 
@@ -798,7 +825,7 @@ export async function transitionCollectionStatus(
         updates.completedAt = now;
       }
 
-      tx.update(donationRef, updates);
+      tx.update(donationRef, sanitizeForFirestore(updates));
 
       // If delivered or completed, clean up volunteer stats (impact records are created server-side via /api/verify/delivery)
       if (nextStatus === 'delivered' || nextStatus === 'completed') {
@@ -1148,7 +1175,7 @@ export async function saveVolunteerProfile(profile: Partial<VolunteerProfile> & 
       updatedAt: now,
     };
 
-    await setDoc(doc(db, 'volunteerProfiles', profile.userId), volData, { merge: true });
+    await setDoc(doc(db, 'volunteerProfiles', profile.userId), sanitizeForFirestore(volData), { merge: true });
   } catch (error) {
     handleFirestoreError(error, OperationType.WRITE, path);
   }
@@ -1260,7 +1287,7 @@ export async function sendNotification(
       read: false,
       createdAt: new Date().toISOString(),
     };
-    await setDoc(notifRef, notifDoc, { merge: true });
+    await setDoc(notifRef, sanitizeForFirestore(notifDoc), { merge: true });
   } catch (error) {
     console.warn('Notification send failed:', error);
   }
@@ -1377,11 +1404,11 @@ export async function createAuditLog(data: Omit<AuditLog, 'id' | 'timestamp'>): 
   const path = 'auditLogs';
   try {
     const ref = doc(collection(db, 'auditLogs'));
-    await setDoc(ref, {
+    await setDoc(ref, sanitizeForFirestore({
       ...data,
       id: ref.id,
       timestamp: new Date().toISOString(),
-    });
+    }));
   } catch (error) {
     console.warn('Audit log write error:', error);
   }

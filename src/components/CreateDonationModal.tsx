@@ -19,6 +19,7 @@ import { useAuth } from '../context/AuthContext';
 import { createDonation } from '../services/dbService';
 import { GoogleRescueMap } from './GoogleRescueMap';
 import { computeSafeUntil } from '../utils/foodSafety';
+import { formatUserFriendlyFirestoreError } from '../utils/firestoreSanitizer';
 
 interface CreateDonationModalProps {
   isOpen: boolean;
@@ -99,6 +100,7 @@ export const CreateDonationModal: React.FC<CreateDonationModalProps> = ({ isOpen
   const [aiLoading, setAiLoading] = useState(false);
   const [aiSuggestion, setAiSuggestion] = useState<any>(null);
   const [error, setError] = useState<string | null>(null);
+  const [success, setSuccess] = useState<string | null>(null);
 
   if (!isOpen) return null;
 
@@ -267,8 +269,12 @@ export const CreateDonationModal: React.FC<CreateDonationModalProps> = ({ isOpen
     const formattedDeadline = pickupDeadline.trim() || `${pickupDate} before ${effectiveDeadline} (${timeZone})`;
 
     setSubmitting(true);
+    setError(null);
+    setSuccess(null);
+
     try {
-      await createDonation({
+      // Build safe payload: optional fields are omitted when blank, never passed as undefined
+      const donationPayload: any = {
         donorId: currentUser.uid,
         donorName: userProfile?.displayName || currentUser.displayName || 'Food Donor',
         foodName: foodName.trim(),
@@ -277,7 +283,6 @@ export const CreateDonationModal: React.FC<CreateDonationModalProps> = ({ isOpen
         quantity: Number(quantity),
         unit,
         servings: Number(servings) || Number(quantity),
-        prepTime,
         preparedAt: new Date(preparedAt).toISOString(),
         safeUntil: foodSafetyCalc.safeUntilIso,
         pickupDeadline: formattedDeadline,
@@ -285,23 +290,38 @@ export const CreateDonationModal: React.FC<CreateDonationModalProps> = ({ isOpen
         availableFrom,
         availableUntil,
         collectionDeadline: normalizedDeadline,
-        preferredPickupTime: preferredPickupTime || undefined,
         timeZone,
         pickupAddress: pickupAddress.trim(),
         latitude,
         longitude,
         storageType,
         packaging,
-        allergens: allergens.trim(),
         imageUrl: imageUrl.trim() || 'https://images.unsplash.com/photo-1546069901-ba9599a7e63c?auto=format&fit=crop&w=600&q=80',
         status: 'available',
-      });
+      };
 
-      onSuccess();
-      onClose();
+      // Handle optional form fields safely without undefined values
+      if (preferredPickupTime && preferredPickupTime.trim()) {
+        donationPayload.preferredPickupTime = preferredPickupTime.trim();
+      }
+      if (prepTime && prepTime.trim()) {
+        donationPayload.prepTime = prepTime.trim();
+      }
+      if (allergens && allergens.trim()) {
+        donationPayload.allergens = allergens.trim();
+      }
+
+      await createDonation(donationPayload);
+      setSuccess('Food donation listed successfully! Thank you for rescuing surplus food.');
+
+      setTimeout(() => {
+        onSuccess();
+        onClose();
+      }, 600);
     } catch (err: any) {
-      console.error('Create donation error:', err);
-      setError(err.message || 'Failed to submit donation. Please check your connection.');
+      console.error('[CreateDonationModal] Error saving donation document:', err);
+      const friendlyMessage = formatUserFriendlyFirestoreError(err);
+      setError(friendlyMessage);
     } finally {
       setSubmitting(false);
     }
@@ -335,6 +355,13 @@ export const CreateDonationModal: React.FC<CreateDonationModalProps> = ({ isOpen
             <div className="p-3 bg-red-50 border border-red-200 rounded-xl text-red-700 text-xs flex items-start gap-2">
               <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
               <span>{error}</span>
+            </div>
+          )}
+
+          {success && (
+            <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-xl text-emerald-800 text-xs flex items-start gap-2">
+              <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
+              <span>{success}</span>
             </div>
           )}
 

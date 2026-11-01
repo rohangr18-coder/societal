@@ -64,7 +64,6 @@ export const activeFirebaseConfig = {
   storageBucket: metaEnv?.VITE_FIREBASE_STORAGE_BUCKET || defaultFirebaseConfig.storageBucket || '',
   messagingSenderId: metaEnv?.VITE_FIREBASE_MESSAGING_SENDER_ID || defaultFirebaseConfig.messagingSenderId || '',
   appId: metaEnv?.VITE_FIREBASE_APP_ID || defaultFirebaseConfig.appId || '',
-  measurementId: metaEnv?.VITE_FIREBASE_MEASUREMENT_ID || defaultFirebaseConfig.measurementId || '',
 };
 
 export const activeFirestoreDatabaseId =

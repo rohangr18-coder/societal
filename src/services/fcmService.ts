@@ -105,9 +105,18 @@ export async function getFcmToken(swRegistration?: ServiceWorkerRegistration): P
 
     const vapidKey = getVapidKey();
 
+    // VAPID key is required for Web Push tokens, but handle its absence gracefully in development
+    if (!vapidKey) {
+      console.info(
+        '[FCM] VITE_FIREBASE_VAPID_KEY is not configured in this environment. ' +
+        'Browser push registration skipped gracefully during development. In-app alerts remain active.'
+      );
+      return null;
+    }
+
     const token = await getToken(messaging, {
       serviceWorkerRegistration: registration,
-      ...(vapidKey ? { vapidKey } : {}),
+      vapidKey,
     });
 
     if (token) {
@@ -213,7 +222,7 @@ export async function enableUserPushNotifications(
 
     const vapidKey = getVapidKey();
     const vapidNotice = !vapidKey && !token
-      ? ' (Note: VITE_FIREBASE_VAPID_KEY is not configured; local in-tab notifications will work, configure VAPID in Firebase Console for full Web Push delivery).'
+      ? ' (Note: VITE_FIREBASE_VAPID_KEY is required for background push notifications when browser tabs are closed. In development, in-app alerts remain active).'
       : '';
 
     return {

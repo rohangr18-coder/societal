@@ -33,6 +33,8 @@ import {
   LayoutGrid,
   Map as MapIcon,
   Layers,
+  Camera,
+  QrCode,
 } from 'lucide-react';
 import { Donation, VolunteerProfile, DonationStatus } from '../types';
 import { useAuth } from '../context/AuthContext';
@@ -49,6 +51,7 @@ import { calculateDistanceKm, calculateDistanceKmSafe } from '../utils/geo';
 import { LiveTrackingMap } from './LiveTrackingMap';
 import { VolunteerNotificationsSlideOver } from './VolunteerNotificationsSlideOver';
 import { VolunteerClusterMap } from './VolunteerClusterMap';
+import { VolunteerQRScannerModal } from './VolunteerQRScannerModal';
 import {
   isFcmSupported,
   enableVolunteerPushNotifications,
@@ -111,6 +114,9 @@ export const VolunteerView: React.FC<VolunteerViewProps> = ({
   // Notifications slide-over panel state
   const [notificationsOpen, setNotificationsOpen] = useState<boolean>(false);
   const [unreadNotifCount, setUnreadNotifCount] = useState<number>(0);
+
+  // Volunteer QR Scanner modal state
+  const [scannerOpen, setScannerOpen] = useState<boolean>(false);
 
   // Subscribe to real-time notifications for unread count indicator
   useEffect(() => {
@@ -743,10 +749,20 @@ export const VolunteerView: React.FC<VolunteerViewProps> = ({
             <span>Radius & Preferences</span>
           </button>
 
+          {/* QR Code Scanner to scan Donor's display screen and trigger pickup */}
+          <button
+            onClick={() => setScannerOpen(true)}
+            className="ml-auto px-4 py-2.5 rounded-xl font-bold text-xs sm:text-sm flex items-center gap-2 bg-gradient-to-r from-emerald-700 to-teal-800 hover:from-emerald-800 hover:to-teal-900 text-white shadow-xs transition-all cursor-pointer"
+            title="Scan Donor Display Screen to Verify Pickup"
+          >
+            <Camera className="w-4 h-4" />
+            <span>Scan Donor Screen</span>
+          </button>
+
           {/* Slide-over Recent Notifications Action Button */}
           <button
             onClick={() => setNotificationsOpen(true)}
-            className={`ml-auto px-4 py-2.5 rounded-xl font-bold text-xs sm:text-sm flex items-center gap-2 transition-all cursor-pointer border ${
+            className={`px-4 py-2.5 rounded-xl font-bold text-xs sm:text-sm flex items-center gap-2 transition-all cursor-pointer border ${
               unreadNotifCount > 0
                 ? 'bg-emerald-50 text-emerald-900 border-emerald-300 hover:bg-emerald-100 shadow-xs'
                 : 'bg-white text-stone-700 border-stone-200 hover:bg-stone-50'
@@ -1138,15 +1154,25 @@ export const VolunteerView: React.FC<VolunteerViewProps> = ({
                   </div>
 
                   <div className="flex flex-wrap items-center gap-2">
-                    {donation.status === 'accepted' && (
-                      <button
-                        onClick={() => handleTransitionStatus(donation, 'picked_up')}
-                        disabled={statusUpdating}
-                        className="bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs px-4 py-2.5 rounded-xl shadow-xs transition-colors flex items-center gap-2 cursor-pointer disabled:opacity-50"
-                      >
-                        <PackageCheck className="w-4 h-4" />
-                        <span>Confirm Food Picked Up from Donor</span>
-                      </button>
+                    {['accepted', 'scheduled'].includes(donation.status) && (
+                      <>
+                        <button
+                          onClick={() => setScannerOpen(true)}
+                          className="bg-emerald-700 hover:bg-emerald-800 text-white font-bold text-xs px-4 py-2.5 rounded-xl shadow-xs transition-colors flex items-center gap-2 cursor-pointer"
+                          title="Scan Donor's Display Screen to verify pickup handover"
+                        >
+                          <QrCode className="w-4 h-4" />
+                          <span>Scan Donor Screen to Verify</span>
+                        </button>
+                        <button
+                          onClick={() => handleTransitionStatus(donation, 'picked_up')}
+                          disabled={statusUpdating}
+                          className="bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs px-4 py-2.5 rounded-xl shadow-xs transition-colors flex items-center gap-2 cursor-pointer disabled:opacity-50"
+                        >
+                          <PackageCheck className="w-4 h-4" />
+                          <span>Confirm Food Picked Up</span>
+                        </button>
+                      </>
                     )}
 
                     {donation.status === 'picked_up' && (
@@ -1611,6 +1637,20 @@ export const VolunteerView: React.FC<VolunteerViewProps> = ({
         donations={donations}
         onSelectDonation={onSelectDonation}
         onNavigateTab={(tab) => setActiveTab(tab as any)}
+      />
+
+      {/* Volunteer QR Scanner for Donor Display Screens */}
+      <VolunteerQRScannerModal
+        isOpen={scannerOpen}
+        onClose={() => setScannerOpen(false)}
+        donations={donations}
+        onPickupVerified={(donationId) => {
+          setActionMessage({
+            type: 'success',
+            text: `Pickup verified! Donation #${donationId.slice(0, 8)} has been confirmed and marked as picked up.`,
+          });
+          setActiveTab('active');
+        }}
       />
     </div>
   );

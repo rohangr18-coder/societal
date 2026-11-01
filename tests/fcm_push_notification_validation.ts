@@ -28,10 +28,15 @@ async function testFcmPushNotifications() {
   assert(Boolean(firebaseConfig.projectId), `projectId configured: "${firebaseConfig.projectId}"`);
   assert(Boolean(firebaseConfig.apiKey), 'Firebase apiKey present');
 
-  // Verify .env.example includes VITE_FIREBASE_VAPID_KEY
+  // Verify .env.example includes VITE_FIREBASE_VAPID_KEY and excludes unnecessary VITE_FIREBASE_MEASUREMENT_ID
   const envExamplePath = path.resolve(process.cwd(), '.env.example');
   const envExampleContent = fs.readFileSync(envExamplePath, 'utf-8');
   assert(envExampleContent.includes('VITE_FIREBASE_VAPID_KEY='), '.env.example documents VITE_FIREBASE_VAPID_KEY');
+  assert(!envExampleContent.includes('VITE_FIREBASE_MEASUREMENT_ID'), '.env.example excludes unnecessary VITE_FIREBASE_MEASUREMENT_ID');
+
+  const firebaseTsPath = path.resolve(process.cwd(), 'src/lib/firebase.ts');
+  const firebaseTsContent = fs.readFileSync(firebaseTsPath, 'utf-8');
+  assert(!firebaseTsContent.includes('VITE_FIREBASE_MEASUREMENT_ID'), 'src/lib/firebase.ts removes VITE_FIREBASE_MEASUREMENT_ID dependency');
 
   // --- Test 2: Service Worker for Background Push Notifications ---
   console.log('\n--- Test 2: Service Worker (firebase-messaging-sw.js) at Root ---');

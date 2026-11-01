@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import QRCode from 'qrcode';
+import jsQR from 'jsqr';
 import {
   X,
   QrCode,
@@ -49,6 +50,7 @@ export const QRVerificationModal: React.FC<QRVerificationModalProps> = ({
 
   // Camera video ref
   const videoRef = useRef<HTMLVideoElement | null>(null);
+  const animationFrameRef = useRef<number | null>(null);
   const [cameraActive, setCameraActive] = useState(false);
 
   const isShowMode = mode === 'show_pickup' || mode === 'show_delivery';
@@ -66,8 +68,19 @@ export const QRVerificationModal: React.FC<QRVerificationModalProps> = ({
       .then(async (rec) => {
         setVerificationData(rec);
         const tokenToDisplay = isPickup ? rec.pickupToken : rec.deliveryToken;
+        const pinToDisplay = isPickup ? rec.pickupPin : rec.deliveryPin;
+
+        // Structured QR payload with donationId, tokens, and verification parameters
+        const structuredPayload = JSON.stringify({
+          app: 'resqbite',
+          type: isPickup ? 'pickup' : 'delivery',
+          donationId: donation.id,
+          token: tokenToDisplay,
+          pin: pinToDisplay,
+        });
+
         try {
-          const url = await QRCode.toDataURL(tokenToDisplay, {
+          const url = await QRCode.toDataURL(structuredPayload, {
             width: 280,
             margin: 2,
             color: {
@@ -93,6 +106,10 @@ export const QRVerificationModal: React.FC<QRVerificationModalProps> = ({
   }, [isOpen, donation?.id, mode]);
 
   const stopCamera = () => {
+    if (animationFrameRef.current) {
+      cancelAnimationFrame(animationFrameRef.current);
+      animationFrameRef.current = null;
+    }
     if (videoRef.current && videoRef.current.srcObject) {
       const stream = videoRef.current.srcObject as MediaStream;
       stream.getTracks().forEach((track) => track.stop());
@@ -109,7 +126,9 @@ export const QRVerificationModal: React.FC<QRVerificationModalProps> = ({
       });
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
-        videoRef.current.play();
+        videoRef.current.setAttribute('playsinline', 'true');
+        await videoRef.current.play();
+        startScanLoop();
       }
     } catch (err) {
       setCameraActive(false);
@@ -120,12 +139,53 @@ export const QRVerificationModal: React.FC<QRVerificationModalProps> = ({
     }
   };
 
-  const handleManualSubmit = async (e?: React.FormEvent) => {
-    if (e) e.preventDefault();
-    if (!manualCode.trim() || !currentUser) return;
+  const startScanLoop = () => {
+    const scan = () => {
+      if (!videoRef.current || videoRef.current.readyState < 2) {
+        animationFrameRef.current = requestAnimationFrame(scan);
+        return;
+      }
+      const video = videoRef.current;
+      const canvas = document.createElement('canvas');
+      const ctx = canvas.getContext('2d');
+      if (ctx && video.videoWidth > 0 && video.videoHeight > 0) {
+        canvas.width = video.videoWidth;
+        canvas.height = video.videoHeight;
+        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+        const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+        const code = jsQR(imgData.data, imgData.width, imgData.height);
+        if (code && code.data) {
+          let codeValue = code.data.trim();
+          if (codeValue.startsWith('{') && codeValue.endsWith('}')) {
+            try {
+              const parsed = JSON.parse(codeValue);
+              codeValue = parsed.token || parsed.pin || codeValue;
+            } catch {}
+          }
+          setManualCode(codeValue);
+          stopCamera();
+          submitVerification(codeValue);
+          return;
+        }
+      }
+      animationFrameRef.current = requestAnimationFrame(scan);
+    };
+    animationFrameRef.current = requestAnimationFrame(scan);
+  };
+
+  const submitVerification = async (codeToSubmit: string) => {
+    if (!codeToSubmit.trim() || !currentUser) return;
 
     setVerifying(true);
     setResultMsg(null);
+
+    let cleanCode = codeToSubmit.trim();
+    if (cleanCode.startsWith('{') && cleanCode.endsWith('}')) {
+      try {
+        const parsed = JSON.parse(cleanCode);
+        cleanCode = parsed.token || parsed.pin || cleanCode;
+      } catch {}
+    }
 
     const actorName = userProfile?.displayName || currentUser.email?.split('@')[0] || 'Authorized Courier';
 
@@ -133,7 +193,7 @@ export const QRVerificationModal: React.FC<QRVerificationModalProps> = ({
       if (isPickup) {
         const res = await verifyPickupWithToken(
           donation.id,
-          manualCode.trim(),
+          cleanCode,
           currentUser.uid,
           actorName
         );
@@ -147,7 +207,7 @@ export const QRVerificationModal: React.FC<QRVerificationModalProps> = ({
       } else {
         const res = await verifyDeliveryWithToken(
           donation.id,
-          manualCode.trim(),
+          cleanCode,
           currentUser.uid,
           actorName
         );
@@ -164,6 +224,11 @@ export const QRVerificationModal: React.FC<QRVerificationModalProps> = ({
     } finally {
       setVerifying(false);
     }
+  };
+
+  const handleManualSubmit = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    await submitVerification(manualCode);
   };
 
   if (!isOpen) return null;

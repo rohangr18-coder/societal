@@ -505,8 +505,11 @@ export const ProfileSettingsView: React.FC = () => {
                   VAPID Key Configured
                 </span>
               ) : (
-                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-amber-50 text-amber-800 border border-amber-200 font-medium" title="Configure VITE_FIREBASE_VAPID_KEY for background Web Push when app is closed">
-                  VAPID Key Optional
+                <span
+                  className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-amber-50 text-amber-800 border border-amber-200 font-medium"
+                  title="VITE_FIREBASE_VAPID_KEY is required for background browser Web Push notifications. Handled gracefully in development mode with in-app alerts."
+                >
+                  VAPID Key Unset (Dev Mode)
                 </span>
               )}
 
