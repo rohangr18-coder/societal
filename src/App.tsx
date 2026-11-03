@@ -203,10 +203,8 @@ function AppContent() {
           </div>
         )}
 
-        {/* If user is on 'auth' tab, OR unauthenticated on 'home' (Welcome Page), OR authenticated without a role */}
-        {(currentTab === 'auth' ||
-          (!currentUser && !authLoading && currentTab === 'home') ||
-          (currentUser && !authLoading && !userProfile?.role)) ? (
+        {/* Render AuthView if explicitly on auth tab, or if signed in but missing a required role */}
+        {(currentTab === 'auth' || (currentUser && !authLoading && !userProfile?.role)) ? (
           <AuthView
             initialRole={authInitialRole}
             onSuccess={(targetDashboard) => {

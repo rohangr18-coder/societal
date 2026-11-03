@@ -67,20 +67,21 @@ export const AuthView: React.FC<AuthViewProps> = ({
 
   // Google Login Handler
   const handleGoogleSignIn = async () => {
-    if (!selectedRole && !isAuthenticatedMissingRole) {
-      return;
-    }
-
     setLoading(true);
     try {
-      const roleToUse = selectedRole || 'donor';
-      const result = await signInWithGoogle(roleToUse);
-
-      const effectiveRole = result?.profile?.role || roleToUse;
-      const targetDashboard = effectiveRole === 'volunteer' ? 'volunteer' : 'dashboard';
-      onSuccess(targetDashboard);
+      const result = await signInWithGoogle(selectedRole || undefined);
+      const effectiveRole = result?.profile?.role;
+      if (effectiveRole) {
+        const targetDashboard =
+          effectiveRole === 'volunteer'
+            ? 'volunteer'
+            : effectiveRole === 'ngo'
+            ? 'organizations'
+            : 'dashboard';
+        onSuccess(targetDashboard);
+      }
     } catch (err) {
-      // Error is set in AuthContext; selectedRole is preserved for instant retry
+      // Error is surfaced through AuthContext error banner
     } finally {
       setLoading(false);
     }
@@ -398,19 +399,8 @@ export const AuthView: React.FC<AuthViewProps> = ({
         ) : (
           /* STANDARD LOGIN FLOW: GOOGLE SIGN-IN */
           <div className="space-y-4 pt-2">
-            {!selectedRole ? (
-              /* Role not yet selected prompt */
-              <div className="p-4 bg-stone-100/80 border border-stone-200 rounded-2xl text-center space-y-1">
-                <p className="text-xs font-bold text-stone-700">
-                  Select either Food Donor or Volunteer above to enable Google Sign-In
-                </p>
-                <p className="text-[11px] text-stone-500">
-                  ResQBite tailors your dashboard experience based on your chosen participation role.
-                </p>
-              </div>
-            ) : (
-              /* Role selected: Active Google Sign-In */
-              <div className="space-y-3">
+            <div className="space-y-3">
+              {selectedRole ? (
                 <div className="flex items-center justify-between text-xs px-1">
                   <span className="text-stone-600 font-medium">
                     Ready to authenticate as:{' '}
@@ -424,49 +414,55 @@ export const AuthView: React.FC<AuthViewProps> = ({
                     className="text-stone-400 hover:text-stone-700 text-[11px] font-semibold flex items-center gap-1 cursor-pointer"
                   >
                     <RotateCcw className="w-3 h-3" />
-                    <span>Change</span>
+                    <span>Clear</span>
                   </button>
                 </div>
+              ) : (
+                <div className="flex items-center justify-between text-xs px-1 text-stone-500">
+                  <span>Sign in to your existing account or select a role above to register:</span>
+                </div>
+              )}
 
-                <button
-                  type="button"
-                  onClick={handleGoogleSignIn}
-                  disabled={loading}
-                  className="w-full flex items-center justify-center gap-3 py-3 px-4 rounded-2xl border-2 border-emerald-500/80 bg-white hover:bg-emerald-50/40 text-stone-800 font-black text-sm shadow-md transition-all hover:scale-[1.01] active:scale-[0.99] cursor-pointer disabled:opacity-50"
-                >
-                  {loading ? (
-                    <>
-                      <Loader2 className="w-5 h-5 animate-spin text-emerald-600" />
-                      <span>Authenticating with Google...</span>
-                    </>
-                  ) : (
-                    <>
-                      <svg className="w-5 h-5 shrink-0" viewBox="0 0 24 24">
-                        <path
-                          fill="#4285F4"
-                          d="M23.745 12.27c0-.7-.06-1.4-.19-2.07H12v4.51h6.6c-.29 1.52-1.14 2.8-2.4 3.66v3.05h3.87c2.26-2.09 3.67-5.17 3.67-9.15z"
-                        />
-                        <path
-                          fill="#34A853"
-                          d="M12 24c3.24 0 5.95-1.08 7.93-2.91l-3.87-3.05c-1.08.72-2.45 1.16-4.06 1.16-3.13 0-5.78-2.11-6.73-4.96H1.27v3.15C3.31 21.36 7.37 24 12 24z"
-                        />
-                        <path
-                          fill="#FBBC05"
-                          d="M5.27 14.24c-.25-.72-.38-1.49-.38-2.24s.13-1.52.38-2.24V6.61H1.27C.46 8.23 0 10.06 0 12s.46 3.77 1.27 5.39l4-3.15z"
-                        />
-                        <path
-                          fill="#EA4335"
-                          d="M12 4.75c1.77 0 3.35.61 4.6 1.8l3.42-3.42C17.95 1.19 15.24 0 12 0 7.37 0 3.31 2.64 1.27 6.61l4 3.15c.95-2.85 3.6-4.96 6.73-4.96z"
-                        />
-                      </svg>
-                      <span>
-                        Continue with Google as {selectedRole === 'donor' ? 'Food Donor' : 'Volunteer'}
-                      </span>
-                    </>
-                  )}
-                </button>
-              </div>
-            )}
+              <button
+                type="button"
+                onClick={handleGoogleSignIn}
+                disabled={loading}
+                className="w-full flex items-center justify-center gap-3 py-3 px-4 rounded-2xl border-2 border-emerald-500/80 bg-white hover:bg-emerald-50/40 text-stone-800 font-black text-sm shadow-md transition-all hover:scale-[1.01] active:scale-[0.99] cursor-pointer disabled:opacity-50"
+              >
+                {loading ? (
+                  <>
+                    <Loader2 className="w-5 h-5 animate-spin text-emerald-600" />
+                    <span>Authenticating with Google...</span>
+                  </>
+                ) : (
+                  <>
+                    <svg className="w-5 h-5 shrink-0" viewBox="0 0 24 24">
+                      <path
+                        fill="#4285F4"
+                        d="M23.745 12.27c0-.7-.06-1.4-.19-2.07H12v4.51h6.6c-.29 1.52-1.14 2.8-2.4 3.66v3.05h3.87c2.26-2.09 3.67-5.17 3.67-9.15z"
+                      />
+                      <path
+                        fill="#34A853"
+                        d="M12 24c3.24 0 5.95-1.08 7.93-2.91l-3.87-3.05c-1.08.72-2.45 1.16-4.06 1.16-3.13 0-5.78-2.11-6.73-4.96H1.27v3.15C3.31 21.36 7.37 24 12 24z"
+                      />
+                      <path
+                        fill="#FBBC05"
+                        d="M5.27 14.24c-.25-.72-.38-1.49-.38-2.24s.13-1.52.38-2.24V6.61H1.27C.46 8.23 0 10.06 0 12s.46 3.77 1.27 5.39l4-3.15z"
+                      />
+                      <path
+                        fill="#EA4335"
+                        d="M12 4.75c1.77 0 3.35.61 4.6 1.8l3.42-3.42C17.95 1.19 15.24 0 12 0 7.37 0 3.31 2.64 1.27 6.61l4 3.15c.95-2.85 3.6-4.96 6.73-4.96z"
+                      />
+                    </svg>
+                    <span>
+                      {selectedRole
+                        ? `Continue with Google as ${selectedRole === 'donor' ? 'Food Donor' : 'Volunteer'}`
+                        : 'Continue with Google'}
+                    </span>
+                  </>
+                )}
+              </button>
+            </div>
 
             {/* Collapsible Secondary Email/Password Option */}
             <div className="pt-4 border-t border-stone-100 text-center">

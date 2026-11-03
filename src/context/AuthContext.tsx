@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useEffect, useState } from 'react';
+import React, { createContext, useContext, useEffect, useState, useRef } from 'react';
 import {
   User as FirebaseUser,
   onAuthStateChanged,
@@ -16,12 +16,20 @@ import { auth, firebaseProjectInfo } from '../lib/firebase';
 import { UserProfile, UserRole } from '../types';
 import { getUserProfile, createOrUpdateUserProfile } from '../services/dbService';
 
-export type AuthProviderErrorType = 'EMAIL_PASSWORD_DISABLED' | 'GOOGLE_AUTH_DISABLED' | 'UNAUTHORIZED_DOMAIN' | null;
+export type AuthProviderErrorType =
+  | 'EMAIL_PASSWORD_DISABLED'
+  | 'GOOGLE_AUTH_DISABLED'
+  | 'UNAUTHORIZED_DOMAIN'
+  | 'POPUP_BLOCKED'
+  | 'NETWORK_ERROR'
+  | 'FIRESTORE_ERROR'
+  | null;
 
 interface AuthContextType {
   currentUser: FirebaseUser | null;
   userProfile: UserProfile | null;
   loading: boolean;
+  profileLoading: boolean;
   error: string | null;
   authProviderError: AuthProviderErrorType;
   firebaseProjectId: string;
@@ -43,34 +51,70 @@ interface AuthContextType {
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 const ADMIN_BOOTSTRAP_EMAIL = 'rohangr18@gmail.com';
+const PROFILE_FETCH_TIMEOUT_MS = 4000;
 
-function mapAuthError(err: any, method: 'signin' | 'signup' | 'google' | 'reset'): { message: string; providerError: AuthProviderErrorType } {
+/**
+ * Maps raw Firebase authentication or Firestore errors to user-friendly messages
+ */
+export function mapAuthError(
+  err: any,
+  method: 'signin' | 'signup' | 'google' | 'reset' | 'profile' = 'signin'
+): { message: string; providerError: AuthProviderErrorType } {
   const code = err?.code || '';
+  const rawMessage = err?.message || String(err || '');
   const currentHost = typeof window !== 'undefined' ? window.location.hostname : 'your deployed domain';
 
   if (code === 'auth/operation-not-allowed' || code === 'auth/admin-restricted-operation') {
     if (method === 'google') {
       return {
-        message: 'Google Sign-in is disabled in your Firebase project. Enable it under Firebase Console > Authentication > Sign-in method.',
+        message: 'Google Sign-in is not enabled in your Firebase project. Please enable it in Firebase Console > Authentication > Sign-in method.',
         providerError: 'GOOGLE_AUTH_DISABLED',
       };
     }
     return {
-      message: 'Email/Password authentication provider is currently disabled in your Firebase project. To enable it, visit Firebase Console > Authentication > Sign-in method > enable Email/Password.',
+      message: 'Email/Password sign-in is not enabled in your Firebase project. Please enable it in Firebase Console > Authentication > Sign-in method.',
       providerError: 'EMAIL_PASSWORD_DISABLED',
     };
   }
 
-  if (code === 'auth/unauthorized-domain') {
+  if (code === 'auth/unauthorized-domain' || rawMessage.includes('unauthorized-domain')) {
     return {
-      message: `The domain "${currentHost}" is not authorized in Firebase Authentication. Please add it in Firebase Console > Authentication > Settings > Authorized domains.`,
+      message: `The domain "${currentHost}" is not authorized in Firebase. Add it in Firebase Console > Authentication > Settings > Authorized domains.`,
       providerError: 'UNAUTHORIZED_DOMAIN',
+    };
+  }
+
+  if (code === 'auth/popup-blocked') {
+    return {
+      message: 'The sign-in popup was blocked by your browser. Please allow popups for this site or try again.',
+      providerError: 'POPUP_BLOCKED',
+    };
+  }
+
+  if (code === 'auth/popup-closed-by-user') {
+    return {
+      message: 'Google sign-in popup was closed before completion. Please try again.',
+      providerError: null,
+    };
+  }
+
+  if (code === 'auth/cancelled-popup-request') {
+    return {
+      message: 'Sign-in request was cancelled by a newer request.',
+      providerError: null,
+    };
+  }
+
+  if (code === 'auth/network-request-failed' || rawMessage.includes('network-request-failed')) {
+    return {
+      message: 'Network connection failed. Please check your internet connection and try again.',
+      providerError: 'NETWORK_ERROR',
     };
   }
 
   if (code === 'auth/email-already-in-use') {
     return {
-      message: 'This email address is already registered. Please sign in or use "Forgot password".',
+      message: 'This email is already registered. Please sign in or use "Forgot password".',
       providerError: null,
     };
   }
@@ -89,7 +133,11 @@ function mapAuthError(err: any, method: 'signin' | 'signup' | 'google' | 'reset'
     };
   }
 
-  if (code === 'auth/user-not-found' || code === 'auth/wrong-password' || code === 'auth/invalid-credential') {
+  if (
+    code === 'auth/user-not-found' ||
+    code === 'auth/wrong-password' ||
+    code === 'auth/invalid-credential'
+  ) {
     return {
       message: 'Invalid email or password. Please verify your credentials and try again.',
       providerError: null,
@@ -110,136 +158,243 @@ function mapAuthError(err: any, method: 'signin' | 'signup' | 'google' | 'reset'
     };
   }
 
-  if (code === 'auth/network-request-failed') {
+  // Firestore-specific errors
+  if (rawMessage.includes('permission-denied') || code === 'permission-denied') {
     return {
-      message: 'Network connection failed. Please check your internet connection and try again.',
-      providerError: null,
+      message: 'Firestore permission denied while loading user profile. Security rules prevented read/write.',
+      providerError: 'FIRESTORE_ERROR',
     };
   }
 
-  if (code === 'auth/popup-closed-by-user') {
+  if (rawMessage.includes('unavailable') || code === 'unavailable') {
     return {
-      message: 'Google sign-in popup was closed before completion.',
-      providerError: null,
-    };
-  }
-
-  if (code === 'auth/popup-blocked') {
-    return {
-      message: 'The sign-in popup was blocked by your browser. Please allow popups or try again.',
-      providerError: null,
-    };
-  }
-
-  if (code === 'auth/cancelled-popup-request') {
-    return {
-      message: 'Sign-in was cancelled.',
-      providerError: null,
+      message: 'Cloud Firestore service is temporarily unavailable. Retrying with local cache.',
+      providerError: 'FIRESTORE_ERROR',
     };
   }
 
   return {
-    message: err?.message || 'Authentication failed. Please try again.',
+    message: rawMessage || 'Authentication operation failed. Please try again.',
     providerError: null,
   };
+}
+
+/**
+ * Executes a promise with an automatic timeout fallback
+ */
+async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, fallbackValue: T): Promise<T> {
+  let timer: any;
+  const timeoutPromise = new Promise<T>((resolve) => {
+    timer = setTimeout(() => {
+      resolve(fallbackValue);
+    }, timeoutMs);
+  });
+
+  try {
+    const result = await Promise.race([promise, timeoutPromise]);
+    clearTimeout(timer);
+    return result;
+  } catch (err) {
+    clearTimeout(timer);
+    throw err;
+  }
 }
 
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [currentUser, setCurrentUser] = useState<FirebaseUser | null>(null);
   const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState<boolean>(true); // Initial auth check
+  const [profileLoading, setProfileLoading] = useState<boolean>(false); // Firestore profile sync
   const [error, setError] = useState<string | null>(null);
   const [authProviderError, setAuthProviderError] = useState<AuthProviderErrorType>(null);
 
+  // In-flight sync de-duplication
+  const syncInProgressRef = useRef<boolean>(false);
+  const currentUserRef = useRef<FirebaseUser | null>(null);
+  currentUserRef.current = currentUser;
+
+  /**
+   * Safe profile retrieval and synchronization with non-blocking timeouts
+   */
   const refreshProfile = async (desiredRole?: UserRole): Promise<UserProfile | null> => {
-    if (!auth.currentUser) {
+    const user = auth.currentUser;
+    if (!user) {
       setUserProfile(null);
       return null;
     }
 
-    const isBootstrapAdmin = auth.currentUser.email?.toLowerCase() === ADMIN_BOOTSTRAP_EMAIL.toLowerCase();
+    // Prevent concurrent duplicate sync calls
+    if (syncInProgressRef.current) {
+      return userProfile;
+    }
+
+    syncInProgressRef.current = true;
+    setProfileLoading(true);
 
     try {
-      let profile = await getUserProfile(auth.currentUser.uid);
+      // 1. Check custom claims and bootstrap email for admin authorization
+      let isVerifiedAdmin = false;
+      const isBootstrapAdmin = user.email?.toLowerCase() === ADMIN_BOOTSTRAP_EMAIL.toLowerCase();
+
+      try {
+        const tokenResult = await withTimeout(user.getIdTokenResult(false), 2000, null);
+        if (tokenResult?.claims?.role === 'admin' || tokenResult?.claims?.admin === true) {
+          isVerifiedAdmin = true;
+        }
+      } catch {
+        // Token claim check failed, fallback to bootstrap check
+      }
+
+      const isAdminUser = isBootstrapAdmin || isVerifiedAdmin;
+
+      // 2. Fetch existing profile with timeout
+      let profile: UserProfile | null = null;
+      try {
+        profile = await withTimeout(
+          getUserProfile(user.uid),
+          PROFILE_FETCH_TIMEOUT_MS,
+          null
+        );
+      } catch (profileErr) {
+        console.warn('[AuthContext] Profile fetch warning:', profileErr);
+      }
 
       if (!profile) {
-        // Initial profile creation
-        const roleToAssign = isBootstrapAdmin
+        // New profile: only assign a role if desiredRole was passed or admin
+        const roleToAssign = isAdminUser
           ? 'admin'
           : desiredRole;
 
         const newProfile: UserProfile = {
-          uid: auth.currentUser.uid,
-          email: auth.currentUser.email || '',
-          displayName: auth.currentUser.displayName || auth.currentUser.email?.split('@')[0] || 'Member',
+          uid: user.uid,
+          email: user.email || '',
+          displayName: user.displayName || user.email?.split('@')[0] || 'Member',
           ...(roleToAssign ? { role: roleToAssign } : {}),
           createdAt: new Date().toISOString(),
           updatedAt: new Date().toISOString(),
         };
 
+        // Attempt Firestore save with timeout
         try {
-          profile = await createOrUpdateUserProfile(newProfile);
+          if (roleToAssign) {
+            profile = await withTimeout(
+              createOrUpdateUserProfile(newProfile),
+              PROFILE_FETCH_TIMEOUT_MS,
+              newProfile
+            );
+          } else {
+            profile = newProfile;
+          }
         } catch {
           profile = newProfile;
         }
       } else {
-        // Existing profile in Firestore: PRESERVE existing role!
-        if (isBootstrapAdmin && profile.role !== 'admin') {
-          profile = await createOrUpdateUserProfile({
-            ...profile,
-            role: 'admin',
-          });
+        // Existing profile in Firestore: STRICTLY PRESERVE EXISTING ROLE
+        if (isAdminUser && profile.role !== 'admin') {
+          try {
+            profile = await withTimeout(
+              createOrUpdateUserProfile({ ...profile, role: 'admin' }),
+              PROFILE_FETCH_TIMEOUT_MS,
+              { ...profile, role: 'admin' }
+            );
+          } catch {
+            profile = { ...profile, role: 'admin' };
+          }
         } else if (!profile.role && desiredRole) {
           // If existing profile was missing a role, apply desiredRole
-          profile = await createOrUpdateUserProfile({
-            ...profile,
-            role: desiredRole,
-          });
+          try {
+            profile = await withTimeout(
+              createOrUpdateUserProfile({ ...profile, role: desiredRole }),
+              PROFILE_FETCH_TIMEOUT_MS,
+              { ...profile, role: desiredRole }
+            );
+          } catch {
+            profile = { ...profile, role: desiredRole };
+          }
         }
       }
 
       setUserProfile(profile);
       return profile;
     } catch (err: any) {
-      console.warn('Profile sync fallback:', err);
+      console.warn('[AuthContext] Profile sync fallback:', err);
+      // Construct safe in-memory fallback profile so the user is NEVER blocked
+      const isBootstrapAdmin = user.email?.toLowerCase() === ADMIN_BOOTSTRAP_EMAIL.toLowerCase();
       const fallback: UserProfile = {
-        uid: auth.currentUser.uid,
-        email: auth.currentUser.email || '',
-        displayName: auth.currentUser.displayName || 'Member',
+        uid: user.uid,
+        email: user.email || '',
+        displayName: user.displayName || user.email?.split('@')[0] || 'Member',
         role: isBootstrapAdmin ? 'admin' : (desiredRole || 'donor'),
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
       };
       setUserProfile(fallback);
       return fallback;
+    } finally {
+      syncInProgressRef.current = false;
+      setProfileLoading(false);
     }
   };
 
   useEffect(() => {
-    // Check if returning from a mobile redirect authentication flow
+    let isMounted = true;
+
+    // Safety fallback: ensure initial loading resolves within 3 seconds regardless of network
+    const safetyTimer = setTimeout(() => {
+      if (isMounted) {
+        setLoading(false);
+      }
+    }, 3000);
+
+    // 1. Check if returning from a mobile redirect authentication flow
     getRedirectResult(auth)
       .then(async (result) => {
+        if (!isMounted) return;
         if (result?.user) {
+          setCurrentUser(result.user);
           await refreshProfile();
         }
       })
       .catch((err) => {
+        if (!isMounted) return;
         const { message, providerError } = mapAuthError(err, 'google');
         setError(message);
         setAuthProviderError(providerError);
       });
 
-    const unsubscribe = onAuthStateChanged(auth, async (user) => {
-      setCurrentUser(user);
-      if (user) {
-        await refreshProfile();
-      } else {
-        setUserProfile(null);
-      }
-      setLoading(false);
-    });
+    // 2. Main Firebase Auth State Listener
+    const unsubscribe = onAuthStateChanged(
+      auth,
+      async (user) => {
+        if (!isMounted) return;
+        clearTimeout(safetyTimer);
+        setCurrentUser(user);
 
-    return () => unsubscribe();
+        if (user) {
+          // Unblock auth loading immediately, sync profile asynchronously
+          setLoading(false);
+          await refreshProfile();
+        } else {
+          setUserProfile(null);
+          setLoading(false);
+        }
+      },
+      (authErr) => {
+        if (!isMounted) return;
+        clearTimeout(safetyTimer);
+        console.error('[AuthContext] onAuthStateChanged error:', authErr);
+        const { message, providerError } = mapAuthError(authErr, 'signin');
+        setError(message);
+        setAuthProviderError(providerError);
+        setLoading(false);
+      }
+    );
+
+    return () => {
+      isMounted = false;
+      clearTimeout(safetyTimer);
+      unsubscribe();
+    };
   }, []);
 
   const signInWithEmail = async (email: string, pass: string) => {
@@ -253,8 +408,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
 
     try {
-      await signInWithEmailAndPassword(auth, cleanEmail, pass);
-      // Successful login clears any prior error
+      const cred = await signInWithEmailAndPassword(auth, cleanEmail, pass);
+      setCurrentUser(cred.user);
+      await refreshProfile();
       setError(null);
       setAuthProviderError(null);
     } catch (err: any) {
@@ -265,7 +421,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   };
 
-  const signUpWithEmail = async (email: string, pass: string, displayName: string, role: UserRole) => {
+  const signUpWithEmail = async (
+    email: string,
+    pass: string,
+    displayName: string,
+    role: UserRole
+  ) => {
     setError(null);
     setAuthProviderError(null);
     const cleanEmail = email.trim();
@@ -290,8 +451,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     try {
       const cred = await createUserWithEmailAndPassword(auth, cleanEmail, pass);
+      setCurrentUser(cred.user);
+
       if (cleanName) {
-        await updateProfile(cred.user, { displayName: cleanName });
+        await updateProfile(cred.user, { displayName: cleanName }).catch(console.warn);
       }
 
       const profile = await createOrUpdateUserProfile({
@@ -300,6 +463,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         displayName: cleanName || cleanEmail.split('@')[0],
         role: safeRole,
       });
+
       setUserProfile(profile);
       setError(null);
       setAuthProviderError(null);
@@ -311,18 +475,32 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   };
 
-  const signInWithGoogle = async (selectedRole?: UserRole): Promise<{ isNewUser: boolean; profile: UserProfile }> => {
+  /**
+   * Resilient Google Sign-In with timeout protection and non-blocking profile retrieval
+   */
+  const signInWithGoogle = async (
+    selectedRole?: UserRole
+  ): Promise<{ isNewUser: boolean; profile: UserProfile }> => {
     setError(null);
     setAuthProviderError(null);
+
     const provider = new GoogleAuthProvider();
     provider.setCustomParameters({ prompt: 'select_account' });
 
     try {
       const res = await signInWithPopup(auth, provider);
       const user = res.user;
+      setCurrentUser(user);
 
+      // Check admin status
       const isBootstrapAdmin = user.email?.toLowerCase() === ADMIN_BOOTSTRAP_EMAIL.toLowerCase();
-      const existing = await getUserProfile(user.uid);
+
+      // Retrieve existing profile with 3.5s timeout protection
+      const existing = await withTimeout(
+        getUserProfile(user.uid),
+        PROFILE_FETCH_TIMEOUT_MS,
+        null
+      ).catch(() => null);
 
       let finalProfile: UserProfile;
 
@@ -330,20 +508,41 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         // Returning user with already saved role: PRESERVE SAVED ROLE!
         finalProfile = existing;
         if (isBootstrapAdmin && existing.role !== 'admin') {
-          finalProfile = await createOrUpdateUserProfile({ ...existing, role: 'admin' });
+          try {
+            finalProfile = await withTimeout(
+              createOrUpdateUserProfile({ ...existing, role: 'admin' }),
+              PROFILE_FETCH_TIMEOUT_MS,
+              { ...existing, role: 'admin' }
+            );
+          } catch {
+            finalProfile = { ...existing, role: 'admin' };
+          }
         }
       } else {
         // New user OR existing user without a role:
         const roleToAssign: UserRole = isBootstrapAdmin
           ? 'admin'
-          : (selectedRole === 'volunteer' || selectedRole === 'ngo' ? selectedRole : 'donor');
+          : (selectedRole === 'volunteer' || selectedRole === 'ngo' ? selectedRole : (selectedRole || 'donor'));
 
-        finalProfile = await createOrUpdateUserProfile({
+        const newProfileData: UserProfile = {
           uid: user.uid,
           email: user.email || '',
           displayName: user.displayName || user.email?.split('@')[0] || 'Member',
           role: roleToAssign,
-        });
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        };
+
+        try {
+          finalProfile = await withTimeout(
+            createOrUpdateUserProfile(newProfileData),
+            PROFILE_FETCH_TIMEOUT_MS,
+            newProfileData
+          );
+        } catch (saveErr) {
+          console.warn('[signInWithGoogle] Firestore profile save warning, using provisional profile:', saveErr);
+          finalProfile = newProfileData;
+        }
       }
 
       setUserProfile(finalProfile);
@@ -351,7 +550,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       setAuthProviderError(null);
       return { isNewUser: !existing, profile: finalProfile };
     } catch (err: any) {
-      // If popup was blocked (common on strict mobile browsers), attempt redirect flow
+      // If popup was blocked (e.g. strict mobile browsers), attempt redirect flow
       if (err?.code === 'auth/popup-blocked') {
         try {
           await signInWithRedirect(auth, provider);
@@ -402,7 +601,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   const updateRole = async (newRole: UserRole) => {
-    if (!currentUser || !userProfile) return;
+    if (!currentUser) return;
     const isBootstrap = currentUser.email?.toLowerCase() === ADMIN_BOOTSTRAP_EMAIL.toLowerCase();
 
     // Security: non-bootstrap users cannot escalate their role to admin
@@ -417,11 +616,27 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       return;
     }
 
-    const updated = await createOrUpdateUserProfile({
-      ...userProfile,
-      role: newRole,
-    });
-    setUserProfile(updated);
+    const currentData = userProfile || {
+      uid: currentUser.uid,
+      email: currentUser.email || '',
+      displayName: currentUser.displayName || 'Member',
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+
+    try {
+      const updated = await withTimeout(
+        createOrUpdateUserProfile({
+          ...currentData,
+          role: newRole,
+        }),
+        PROFILE_FETCH_TIMEOUT_MS,
+        { ...currentData, role: newRole }
+      );
+      setUserProfile(updated);
+    } catch {
+      setUserProfile({ ...currentData, role: newRole });
+    }
   };
 
   const clearError = () => {
@@ -441,6 +656,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         currentUser,
         userProfile,
         loading,
+        profileLoading,
         error,
         authProviderError,
         firebaseProjectId: firebaseProjectInfo.projectId,
@@ -471,4 +687,3 @@ export function useAuth() {
   }
   return context;
 }
-
