@@ -586,34 +586,27 @@ export const DonationDetailModal: React.FC<DonationDetailModalProps> = ({ donati
               </button>
             )}
 
-            {/* Volunteer Status: Picked Up */}
+            {/* Volunteer Status: Picked Up via Handover Verification */}
             {donation.status === 'scheduled' && (isAssignedVolunteer || isAdmin || isNgo) && (
               <button
-                onClick={() =>
-                  handleStatusChange('picked_up', 'Food collected from donor. In transit to shelter.')
-                }
+                onClick={() => setQrModal({ isOpen: true, mode: 'scan_pickup' })}
                 disabled={loadingAction}
                 className="bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs px-4 py-2.5 rounded-xl flex items-center gap-2 cursor-pointer"
               >
                 <Package className="w-4 h-4" />
-                Mark Food Picked Up
+                Verify Pickup Handover
               </button>
             )}
 
-            {/* Volunteer/NGO Status: Delivered */}
-            {donation.status === 'picked_up' && (isAssignedVolunteer || isAssignedNgo || isAdmin) && (
+            {/* Volunteer/NGO Status: Delivered via Handover Verification */}
+            {(donation.status === 'picked_up' || donation.status === 'in_transit') && (isAssignedVolunteer || isAssignedNgo || isAdmin) && (
               <button
-                onClick={() =>
-                  handleStatusChange(
-                    'delivered',
-                    'Food handed over to verified shelter kitchen. Verified delivery complete.'
-                  )
-                }
+                onClick={() => setQrModal({ isOpen: true, mode: 'scan_delivery' })}
                 disabled={loadingAction}
                 className="bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs px-4 py-2.5 rounded-xl flex items-center gap-2 cursor-pointer"
               >
                 <CheckCircle2 className="w-4 h-4" />
-                Confirm Safe Delivery
+                Verify Delivery at Shelter
               </button>
             )}
 

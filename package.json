@@ -1,15 +1,15 @@
 {
-  "name": "react-example",
+  "name": "food-rescue-network",
   "private": true,
   "version": "0.0.0",
   "type": "module",
   "scripts": {
-    "dev": "vite --port=3000 --host=0.0.0.0",
-    "build": "vite build && esbuild server/geminiApi.ts server/app.ts server/expirationJob.ts --format=esm --platform=node --outdir=server",
+    "dev": "tsx server.ts",
+    "build": "vite build && esbuild server/app.ts --bundle --packages=external --format=esm --platform=node --outfile=server/app.js",
     "start": "tsx server.ts",
     "test": "tsx tests/all_tests_runner.ts",
     "preview": "vite preview",
-    "clean": "rm -rf dist server/geminiApi.js server/app.js",
+    "clean": "rm -rf dist server/app.js",
     "lint": "tsc --noEmit"
   },
   "dependencies": {

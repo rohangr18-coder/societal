@@ -15,7 +15,6 @@ import {
   Droplets,
   PackageCheck,
   Bike,
-  Layers,
   Sparkles,
   Download,
   Printer,
@@ -23,6 +22,7 @@ import {
   Check,
   X,
   ShieldCheck,
+  Layers,
 } from 'lucide-react';
 import {
   BarChart,
@@ -36,10 +36,12 @@ import {
 } from 'recharts';
 import { Donation } from '../types';
 import { useLanguage } from '../context/LanguageContext';
+import { ImpactStatCards } from './impact/ImpactStatCards';
+import { ImpactMethodology } from './impact/ImpactMethodology';
+import { generateImpactCsv, ImpactSummaryMetrics } from './impact/generateImpactCsv';
 
-export interface ImpactAnalyticsViewProps {
-  donations: Donation[];
-}
+export type { ImpactSummaryMetrics };
+export { generateImpactCsv };
 
 export interface MonthlyCategoryData {
   monthKey: string; // e.g. "2026-05"
@@ -100,130 +102,49 @@ export function buildMonthlyCategoryData(donations: Donation[]): MonthlyCategory
     const monthBucket = months.find((m) => m.monthKey === key);
     if (!monthBucket) return;
 
-    const amount = Number(donation.servings) || Number(donation.quantity) || 12;
+    const servings = donation.servings || Math.round(donation.quantity * 2.5);
     const cat = (donation.category || '').toLowerCase();
 
-    if (cat.includes('cooked') || cat.includes('meal')) {
-      monthBucket.cookedMeals += amount;
+    if (cat.includes('cooked') || cat.includes('meal') || cat.includes('curry') || cat.includes('rice')) {
+      monthBucket.cookedMeals += servings;
     } else if (cat.includes('produce') || cat.includes('fruit') || cat.includes('vegetable')) {
-      monthBucket.produce += amount;
-    } else if (cat.includes('bakery') || cat.includes('bread')) {
-      monthBucket.bakery += amount;
-    } else if (cat.includes('dairy') || cat.includes('egg')) {
-      monthBucket.dairy += amount;
-    } else if (cat.includes('packaged') || cat.includes('canned')) {
-      monthBucket.packagedGoods += amount;
+      monthBucket.produce += servings;
+    } else if (cat.includes('bakery') || cat.includes('bread') || cat.includes('roti') || cat.includes('snack')) {
+      monthBucket.bakery += servings;
+    } else if (cat.includes('dairy') || cat.includes('milk') || cat.includes('egg') || cat.includes('paneer')) {
+      monthBucket.dairy += servings;
+    } else if (cat.includes('pack') || cat.includes('can') || cat.includes('grain') || cat.includes('grocery')) {
+      monthBucket.packagedGoods += servings;
     } else {
-      monthBucket.other += amount;
+      monthBucket.other += servings;
     }
 
-    monthBucket.total += amount;
+    monthBucket.total += servings;
   });
 
   return months;
 }
 
-export interface ImpactSummaryMetrics {
-  timeFilter: string;
-  normalizedTotalKg: number;
-  servingsDelivered: number;
-  co2AvoidedKg: number;
-  waterSavedLiters: number;
-  successRate: number;
-  totalDonations: number;
-  totalDelivered: number;
-  uniqueDonors: number;
-  uniqueNgos: number;
-  uniqueVolunteers: number;
-}
-
-/**
- * Generates structured, RFC-4180 compliant CSV content covering KPI aggregates,
- * monthly distribution trends, and individual donation tracking rows.
- */
-export function generateImpactCsv(
-  donations: Donation[],
-  metrics: ImpactSummaryMetrics,
-  monthlyData: MonthlyCategoryData[]
-): string {
-  const lines: string[] = [];
-
-  // Header & Metadata
-  lines.push('RESQBITE FOOD RESCUE NETWORK - VERIFIED IMPACT METRICS REPORT');
-  lines.push(`Generated At,"${new Date().toLocaleString()}"`);
-  lines.push(`Reporting Period,"${metrics.timeFilter.toUpperCase()}"`);
-  lines.push('');
-
-  // High-Level KPIs
-  lines.push('--- KEY IMPACT PERFORMANCE INDICATORS ---');
-  lines.push('Metric,Value,Unit,Description');
-  lines.push(`Total Food Diverted from Landfills,${metrics.normalizedTotalKg.toFixed(1)},kg,Total edible surplus recovered and redirected`);
-  lines.push(`Meals & Portions Distributed,${metrics.servingsDelivered},portions,Direct nourishment supplied to community shelters`);
-  lines.push(`Greenhouse Gas Mitigated,${metrics.co2AvoidedKg},kg CO2e,UN FAO factor: 2.5 kg CO2e per 1 kg food waste diverted`);
-  lines.push(`Agricultural Freshwater Conserved,${metrics.waterSavedLiters},liters,Embodied freshwater conserved from crop cultivation & prep`);
-  lines.push(`Rescue Logistics Success Rate,${metrics.successRate},%,Ratio of delivered batches to completed listings`);
-  lines.push(`Total Surplus Listings,${metrics.totalDonations},listings,Recorded listings in the active reporting window`);
-  lines.push(`Confirmed Successful Deliveries,${metrics.totalDelivered},batches,Handover verified by recipient shelters`);
-  lines.push(`Participating Food Donors,${metrics.uniqueDonors},entities,Hotels caterers supermarkets and restaurants`);
-  lines.push(`Verified Partner NGOs & Shelters,${metrics.uniqueNgos},shelters,Registered community kitchens & feeding points`);
-  lines.push(`Active Volunteer Couriers,${metrics.uniqueVolunteers},couriers,Logged GPS-verified rescue couriers`);
-  lines.push('');
-
-  // Monthly Trends Table
-  lines.push('--- MONTHLY FOOD RESCUED BY CATEGORY (LAST 6 MONTHS) ---');
-  lines.push('Month,Cooked Meals (servings),Produce & Fruits,Bakery & Bread,Dairy & Eggs,Packaged Goods,Other Surplus,Total Rescued');
-  monthlyData.forEach((m) => {
-    lines.push(`"${m.monthLabel}",${m.cookedMeals},${m.produce},${m.bakery},${m.dairy},${m.packagedGoods},${m.other},${m.total}`);
-  });
-  lines.push('');
-
-  // Detailed Records Table
-  lines.push('--- INDIVIDUAL DONATION RESCUE RECORDS ---');
-  lines.push('ID,Food Name,Category,Quantity,Unit,Estimated Servings,Status,Donor Name,Pickup Address,Storage Type,Packaging,Created At,Pickup Deadline');
-  donations.forEach((d) => {
-    const safe = (val: any) => `"${String(val ?? '').replace(/"/g, '""')}"`;
-    lines.push([
-      safe(d.id),
-      safe(d.foodName),
-      safe(d.category),
-      d.quantity ?? 0,
-      safe(d.unit),
-      d.servings ?? 0,
-      safe(d.status),
-      safe(d.donorName),
-      safe(d.pickupAddress),
-      safe(d.storageType),
-      safe(d.packaging),
-      safe(d.createdAt),
-      safe(d.pickupDeadline || d.collectionDeadline),
-    ].join(','));
-  });
-
-  return lines.join('\n');
-}
-
-/**
- * Custom Tooltip for the Recharts BarChart
- */
-const CustomBarTooltip = ({ active, payload, label }: any) => {
+export const CustomBarTooltip = ({ active, payload, label }: any) => {
   if (active && payload && payload.length) {
-    const total = payload.reduce((acc: number, p: any) => acc + (Number(p.value) || 0), 0);
+    const total = payload.reduce((acc: number, entry: any) => acc + (Number(entry.value) || 0), 0);
     return (
-      <div className="bg-white p-3.5 rounded-2xl shadow-xl border border-stone-200 text-xs space-y-1.5 min-w-[210px] animate-in fade-in zoom-in-95 duration-100">
-        <div className="font-bold text-stone-900 border-b border-stone-100 pb-1 flex justify-between items-center">
-          <span className="text-stone-700">{label}</span>
-          <span className="text-emerald-700 font-extrabold">{total.toLocaleString()} meals</span>
+      <div className="bg-white/95 backdrop-blur-md p-3.5 rounded-2xl shadow-xl border border-stone-200 text-xs space-y-1.5 min-w-[200px]">
+        <div className="font-extrabold text-stone-900 border-b border-stone-100 pb-1 flex justify-between items-center">
+          <span>{label}</span>
+          <span className="text-emerald-700 font-bold">{total.toLocaleString()} meals</span>
         </div>
         <div className="space-y-1 pt-0.5">
           {payload.map((entry: any, index: number) => (
-            <div key={`item-${index}`} className="flex items-center justify-between text-[11px]">
+            <div key={`item-${index}`} className="flex items-center justify-between gap-4 text-[11px]">
               <span className="flex items-center gap-1.5 text-stone-600 font-medium">
-                <span className="w-2.5 h-2.5 rounded-sm" style={{ backgroundColor: entry.color }} />
+                <span
+                  className="w-2.5 h-2.5 rounded-full inline-block shrink-0"
+                  style={{ backgroundColor: entry.color }}
+                />
                 {entry.name}:
               </span>
-              <span className="font-bold text-stone-900">
-                {Number(entry.value).toLocaleString()}
-              </span>
+              <span className="font-bold text-stone-900">{Number(entry.value).toLocaleString()}</span>
             </div>
           ))}
         </div>
@@ -232,6 +153,182 @@ const CustomBarTooltip = ({ active, payload, label }: any) => {
   }
   return null;
 };
+
+export interface MonthlyFoodRescuedChartProps {
+  monthlyData: MonthlyCategoryData[];
+  sixMonthTotal: number;
+}
+
+export const MonthlyFoodRescuedChart: React.FC<MonthlyFoodRescuedChartProps> = ({
+  monthlyData,
+  sixMonthTotal,
+}) => {
+  const [chartMode, setChartMode] = useState<'stacked' | 'grouped'>('stacked');
+
+  const peakMonth = monthlyData.reduce(
+    (max, m) => (m.total > max.total ? m : max),
+    monthlyData[0] || { monthLabel: '-', total: 0 }
+  );
+
+  return (
+    <div className="bg-white p-6 rounded-3xl border border-stone-200 shadow-2xs space-y-4">
+      {/* Chart Header & Controls */}
+      <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 border-b border-stone-100 pb-4">
+        <div>
+          <div className="flex items-center gap-2">
+            <div className="p-2 bg-emerald-100 rounded-xl text-emerald-800">
+              <BarChartIcon className="w-5 h-5 text-emerald-700" />
+            </div>
+            <div>
+              <h3 className="text-base font-bold text-stone-900">
+                Monthly Food Rescued by Category (Last 6 Months)
+              </h3>
+              <p className="text-xs text-stone-500">
+                Tracking rescued meal equivalents across Cooked Meals, Fresh Produce, Bakery, Dairy & Packaged Goods
+              </p>
+            </div>
+          </div>
+        </div>
+
+        {/* Mode Selector Toggle: Stacked vs Grouped */}
+        <div className="flex items-center bg-stone-100 p-1 rounded-2xl border border-stone-200 self-start sm:self-auto">
+          <button
+            onClick={() => setChartMode('stacked')}
+            className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 ${
+              chartMode === 'stacked'
+                ? 'bg-emerald-700 text-white shadow-2xs'
+                : 'text-stone-600 hover:text-stone-900'
+            }`}
+          >
+            <Layers className="w-3.5 h-3.5" />
+            <span>Stacked</span>
+          </button>
+          <button
+            onClick={() => setChartMode('grouped')}
+            className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 ${
+              chartMode === 'grouped'
+                ? 'bg-emerald-700 text-white shadow-2xs'
+                : 'text-stone-600 hover:text-stone-900'
+            }`}
+          >
+            <span>Side-by-Side</span>
+          </button>
+        </div>
+      </div>
+
+      {/* Recharts Responsive Container */}
+      <div className="h-[360px] w-full pt-2">
+        <ResponsiveContainer width="100%" height="100%">
+          <BarChart
+            data={monthlyData}
+            margin={{ top: 20, right: 20, left: -10, bottom: 5 }}
+          >
+            <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
+            <XAxis
+              dataKey="monthLabel"
+              tick={{ fill: '#64748b', fontSize: 12, fontWeight: 600 }}
+              axisLine={{ stroke: '#e2e8f0' }}
+              tickLine={false}
+            />
+            <YAxis
+              tick={{ fill: '#64748b', fontSize: 11 }}
+              axisLine={false}
+              tickLine={false}
+              tickFormatter={(val) => `${val}`}
+            />
+            <Tooltip content={<CustomBarTooltip />} />
+            <Legend
+              iconType="circle"
+              wrapperStyle={{ paddingTop: 15, fontSize: 12, color: '#475569' }}
+            />
+            <Bar
+              dataKey="cookedMeals"
+              name="Cooked Meals"
+              fill="#059669"
+              stackId={chartMode === 'stacked' ? 'a' : undefined}
+              radius={chartMode === 'stacked' ? [0, 0, 0, 0] : [4, 4, 0, 0]}
+            />
+            <Bar
+              dataKey="produce"
+              name="Produce & Fruits"
+              fill="#10b981"
+              stackId={chartMode === 'stacked' ? 'a' : undefined}
+              radius={chartMode === 'stacked' ? [0, 0, 0, 0] : [4, 4, 0, 0]}
+            />
+            <Bar
+              dataKey="bakery"
+              name="Bakery & Bread"
+              fill="#f59e0b"
+              stackId={chartMode === 'stacked' ? 'a' : undefined}
+              radius={chartMode === 'stacked' ? [0, 0, 0, 0] : [4, 4, 0, 0]}
+            />
+            <Bar
+              dataKey="dairy"
+              name="Dairy & Eggs"
+              fill="#3b82f6"
+              stackId={chartMode === 'stacked' ? 'a' : undefined}
+              radius={chartMode === 'stacked' ? [0, 0, 0, 0] : [4, 4, 0, 0]}
+            />
+            <Bar
+              dataKey="packagedGoods"
+              name="Packaged Goods"
+              fill="#6366f1"
+              stackId={chartMode === 'stacked' ? 'a' : undefined}
+              radius={chartMode === 'stacked' ? [0, 0, 0, 0] : [4, 4, 0, 0]}
+            />
+            <Bar
+              dataKey="other"
+              name="Other Surplus"
+              fill="#14b8a6"
+              stackId={chartMode === 'stacked' ? 'a' : undefined}
+              radius={chartMode === 'stacked' ? [4, 4, 0, 0] : [4, 4, 0, 0]}
+            />
+          </BarChart>
+        </ResponsiveContainer>
+      </div>
+
+      {/* 6-Month Summary Footnotes */}
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 pt-4 border-t border-stone-100 text-xs">
+        <div className="bg-stone-50 p-3 rounded-2xl border border-stone-100">
+          <span className="text-[10px] text-stone-400 block font-medium uppercase tracking-wider">
+            6-Month Total Rescued
+          </span>
+          <span className="text-base font-extrabold text-emerald-950 mt-0.5 block">
+            {sixMonthTotal.toLocaleString()} meals
+          </span>
+        </div>
+        <div className="bg-stone-50 p-3 rounded-2xl border border-stone-100">
+          <span className="text-[10px] text-stone-400 block font-medium uppercase tracking-wider">
+            Top Category
+          </span>
+          <span className="text-base font-extrabold text-stone-900 mt-0.5 block">
+            Cooked Meals
+          </span>
+        </div>
+        <div className="bg-stone-50 p-3 rounded-2xl border border-stone-100">
+          <span className="text-[10px] text-stone-400 block font-medium uppercase tracking-wider">
+            Peak Month
+          </span>
+          <span className="text-base font-extrabold text-stone-900 mt-0.5 block">
+            {peakMonth.monthLabel} ({peakMonth.total.toLocaleString()} meals)
+          </span>
+        </div>
+        <div className="bg-stone-50 p-3 rounded-2xl border border-stone-100">
+          <span className="text-[10px] text-stone-400 block font-medium uppercase tracking-wider">
+            Monthly Average
+          </span>
+          <span className="text-base font-extrabold text-stone-900 mt-0.5 block">
+            {Math.round(sixMonthTotal / 6).toLocaleString()} meals/mo
+          </span>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+export interface ImpactAnalyticsViewProps {
+  donations: Donation[];
+}
 
 export const ImpactAnalyticsView: React.FC<ImpactAnalyticsViewProps> = ({ donations }) => {
   const { t } = useLanguage();
@@ -467,222 +564,21 @@ export const ImpactAnalyticsView: React.FC<ImpactAnalyticsViewProps> = ({ donati
       </div>
 
       {/* Main KPI Grid */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5">
-        {/* Total Food Rescued */}
-        <div className="bg-white p-6 rounded-3xl border border-stone-200 shadow-2xs space-y-2">
-          <div className="w-10 h-10 rounded-xl bg-emerald-100 text-emerald-800 flex items-center justify-center font-bold">
-            <Utensils className="w-5 h-5" />
-          </div>
-          <span className="text-xs text-stone-500 font-semibold uppercase tracking-wider block">
-            {t('impact.kgDiverted')}
-          </span>
-          <div className="text-3xl font-extrabold text-emerald-950">
-            {Math.round(normalizedTotalKg * 10) / 10} <span className="text-base font-bold text-stone-500">kg eq.</span>
-          </div>
-          <p className="text-[11px] text-stone-400">
-            {kgDelivered > 0 ? `${kgDelivered} kg raw produce & groceries` : 'From verified deliveries'}
-          </p>
-        </div>
-
-        {/* Meals Distributed */}
-        <div className="bg-white p-6 rounded-3xl border border-stone-200 shadow-2xs space-y-2">
-          <div className="w-10 h-10 rounded-xl bg-orange-100 text-orange-800 flex items-center justify-center font-bold">
-            <Award className="w-5 h-5" />
-          </div>
-          <span className="text-xs text-stone-500 font-semibold uppercase tracking-wider block">
-            {t('impact.mealsRescued')}
-          </span>
-          <div className="text-3xl font-extrabold text-stone-900">
-            {servingsDelivered > 0 ? servingsDelivered : Math.round(normalizedTotalKg * 2.5)}{' '}
-            <span className="text-base font-bold text-stone-500">portions</span>
-          </div>
-          <p className="text-[11px] text-stone-400">Fed to shelters & community kitchens</p>
-        </div>
-
-        {/* CO2 Emissions Avoided */}
-        <div className="bg-white p-6 rounded-3xl border border-stone-200 shadow-2xs space-y-2">
-          <div className="w-10 h-10 rounded-xl bg-teal-100 text-teal-800 flex items-center justify-center font-bold">
-            <Leaf className="w-5 h-5" />
-          </div>
-          <span className="text-xs text-stone-500 font-semibold uppercase tracking-wider block">
-            {t('impact.co2Prevented')}
-          </span>
-          <div className="text-3xl font-extrabold text-teal-900">
-            {co2AvoidedKg} <span className="text-base font-bold text-stone-500">kg CO₂e</span>
-          </div>
-          <p className="text-[11px] text-stone-400">FAO factor: 2.5 kg CO₂e / kg diverted</p>
-        </div>
-
-        {/* Rescue Success Rate */}
-        <div className="bg-white p-6 rounded-3xl border border-stone-200 shadow-2xs space-y-2">
-          <div className="w-10 h-10 rounded-xl bg-blue-100 text-blue-800 flex items-center justify-center font-bold">
-            <TrendingUp className="w-5 h-5" />
-          </div>
-          <span className="text-xs text-stone-500 font-semibold uppercase tracking-wider block">
-            {t('impact.successRate')}
-          </span>
-          <div className="text-3xl font-extrabold text-blue-900">{successRate}%</div>
-          <p className="text-[11px] text-stone-400">
-            {totalDelivered} delivered of {totalCreated} listings
-          </p>
-        </div>
-      </div>
+      <ImpactStatCards
+        t={t}
+        normalizedTotalKg={normalizedTotalKg}
+        kgDelivered={kgDelivered}
+        servingsDelivered={servingsDelivered}
+        co2AvoidedKg={co2AvoidedKg}
+        successRate={successRate}
+        totalDelivered={totalDelivered}
+        totalCreated={totalCreated}
+      />
 
       {/* ========================================================================= */}
       {/* RECHARTS BAR CHART: 'Monthly Food Rescued' by Category (Last 6 Months)    */}
       {/* ========================================================================= */}
-      <div className="bg-white p-6 sm:p-7 rounded-3xl border border-stone-200 shadow-2xs space-y-5">
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-3 border-b border-stone-100">
-          <div>
-            <div className="flex items-center gap-2">
-              <div className="p-1.5 rounded-xl bg-emerald-50 text-emerald-700">
-                <BarChartIcon className="w-4 h-4" />
-              </div>
-              <h2 className="text-lg font-bold text-stone-900 tracking-tight">
-                Monthly Food Rescued
-              </h2>
-              <span className="bg-emerald-100 text-emerald-800 text-[10px] font-extrabold px-2.5 py-0.5 rounded-full">
-                Last 6 Months
-              </span>
-            </div>
-            <p className="text-xs text-stone-500 mt-1">
-              Volume of edible surplus food rescued and distributed by category across our partner network.
-            </p>
-          </div>
-
-          {/* Mode Selector Toggle: Stacked vs Grouped */}
-          <div className="flex items-center bg-stone-100 p-1 rounded-2xl border border-stone-200 self-start sm:self-auto">
-            <button
-              onClick={() => setChartMode('stacked')}
-              className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 ${
-                chartMode === 'stacked'
-                  ? 'bg-emerald-700 text-white shadow-2xs'
-                  : 'text-stone-600 hover:text-stone-900'
-              }`}
-            >
-              <Layers className="w-3.5 h-3.5" />
-              <span>Stacked</span>
-            </button>
-            <button
-              onClick={() => setChartMode('grouped')}
-              className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 ${
-                chartMode === 'grouped'
-                  ? 'bg-emerald-700 text-white shadow-2xs'
-                  : 'text-stone-600 hover:text-stone-900'
-              }`}
-            >
-              <span>Side-by-Side</span>
-            </button>
-          </div>
-        </div>
-
-        {/* Recharts Responsive Container */}
-        <div className="h-[360px] w-full pt-2">
-          <ResponsiveContainer width="100%" height="100%">
-            <BarChart
-              data={monthlyData}
-              margin={{ top: 20, right: 20, left: -10, bottom: 5 }}
-            >
-              <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
-              <XAxis
-                dataKey="monthLabel"
-                tick={{ fill: '#64748b', fontSize: 12, fontWeight: 600 }}
-                axisLine={{ stroke: '#e2e8f0' }}
-                tickLine={false}
-              />
-              <YAxis
-                tick={{ fill: '#64748b', fontSize: 11 }}
-                axisLine={false}
-                tickLine={false}
-                tickFormatter={(val) => `${val}`}
-              />
-              <Tooltip content={<CustomBarTooltip />} />
-              <Legend
-                iconType="circle"
-                wrapperStyle={{ paddingTop: 15, fontSize: 12, color: '#475569' }}
-              />
-              <Bar
-                dataKey="cookedMeals"
-                name="Cooked Meals"
-                fill="#059669"
-                stackId={chartMode === 'stacked' ? 'a' : undefined}
-                radius={chartMode === 'stacked' ? [0, 0, 0, 0] : [4, 4, 0, 0]}
-              />
-              <Bar
-                dataKey="produce"
-                name="Produce & Fruits"
-                fill="#10b981"
-                stackId={chartMode === 'stacked' ? 'a' : undefined}
-                radius={chartMode === 'stacked' ? [0, 0, 0, 0] : [4, 4, 0, 0]}
-              />
-              <Bar
-                dataKey="bakery"
-                name="Bakery & Bread"
-                fill="#f59e0b"
-                stackId={chartMode === 'stacked' ? 'a' : undefined}
-                radius={chartMode === 'stacked' ? [0, 0, 0, 0] : [4, 4, 0, 0]}
-              />
-              <Bar
-                dataKey="dairy"
-                name="Dairy & Eggs"
-                fill="#3b82f6"
-                stackId={chartMode === 'stacked' ? 'a' : undefined}
-                radius={chartMode === 'stacked' ? [0, 0, 0, 0] : [4, 4, 0, 0]}
-              />
-              <Bar
-                dataKey="packagedGoods"
-                name="Packaged Goods"
-                fill="#6366f1"
-                stackId={chartMode === 'stacked' ? 'a' : undefined}
-                radius={chartMode === 'stacked' ? [0, 0, 0, 0] : [4, 4, 0, 0]}
-              />
-              <Bar
-                dataKey="other"
-                name="Other Surplus"
-                fill="#14b8a6"
-                stackId={chartMode === 'stacked' ? 'a' : undefined}
-                radius={chartMode === 'stacked' ? [4, 4, 0, 0] : [4, 4, 0, 0]}
-              />
-            </BarChart>
-          </ResponsiveContainer>
-        </div>
-
-        {/* 6-Month Summary Footnotes */}
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 pt-4 border-t border-stone-100 text-xs">
-          <div className="bg-stone-50 p-3 rounded-2xl border border-stone-100">
-            <span className="text-[10px] text-stone-400 block font-medium uppercase tracking-wider">
-              6-Month Total Rescued
-            </span>
-            <span className="text-base font-extrabold text-emerald-950 mt-0.5 block">
-              {sixMonthTotal.toLocaleString()} meals
-            </span>
-          </div>
-          <div className="bg-stone-50 p-3 rounded-2xl border border-stone-100">
-            <span className="text-[10px] text-stone-400 block font-medium uppercase tracking-wider">
-              Top Category
-            </span>
-            <span className="text-base font-extrabold text-stone-900 mt-0.5 block">
-              Cooked Meals
-            </span>
-          </div>
-          <div className="bg-stone-50 p-3 rounded-2xl border border-stone-100">
-            <span className="text-[10px] text-stone-400 block font-medium uppercase tracking-wider">
-              Peak Month
-            </span>
-            <span className="text-base font-extrabold text-stone-900 mt-0.5 block">
-              {peakMonth.monthLabel} ({peakMonth.total.toLocaleString()} meals)
-            </span>
-          </div>
-          <div className="bg-stone-50 p-3 rounded-2xl border border-stone-100">
-            <span className="text-[10px] text-stone-400 block font-medium uppercase tracking-wider">
-              Monthly Average
-            </span>
-            <span className="text-base font-extrabold text-stone-900 mt-0.5 block">
-              {Math.round(sixMonthTotal / 6).toLocaleString()} meals/mo
-            </span>
-          </div>
-        </div>
-      </div>
+      <MonthlyFoodRescuedChart monthlyData={monthlyData} sixMonthTotal={sixMonthTotal} />
 
       {/* Operations & Participants Breakdown */}
       <div className="grid grid-cols-1 md:grid-cols-4 gap-5">
@@ -797,47 +693,10 @@ export const ImpactAnalyticsView: React.FC<ImpactAnalyticsViewProps> = ({ donati
         </div>
       </div>
 
-      {/* Environmental Equivalencies */}
-      <div className="bg-gradient-to-r from-emerald-800 to-teal-900 text-white p-6 rounded-3xl shadow-md grid grid-cols-1 sm:grid-cols-2 gap-6 items-center">
-        <div className="space-y-2">
-          <span className="text-xs font-bold uppercase tracking-wider text-emerald-300">
-            Scientific Environmental Impact
-          </span>
-          <h3 className="text-lg font-bold">Landfill Diversion & Resource Conservation</h3>
-          <p className="text-xs text-emerald-100/90 leading-relaxed">
-            Every kilogram of food saved from rotting in landfills avoids potent methane emissions and conserves embodied agricultural water used during cultivation and preparation.
-          </p>
-        </div>
-        <div className="grid grid-cols-2 gap-4 text-center">
-          <div className="bg-white/10 p-4 rounded-2xl backdrop-blur-xs">
-            <Droplets className="w-6 h-6 text-cyan-300 mx-auto mb-1" />
-            <div className="text-2xl font-black">{waterSavedLiters.toLocaleString()} L</div>
-            <div className="text-[11px] text-cyan-200">Freshwater Conserved (est.)</div>
-          </div>
-          <div className="bg-white/10 p-4 rounded-2xl backdrop-blur-xs">
-            <Leaf className="w-6 h-6 text-emerald-300 mx-auto mb-1" />
-            <div className="text-2xl font-black">{co2AvoidedKg} kg</div>
-            <div className="text-[11px] text-emerald-200">CO₂ Equivalent Mitigated</div>
-          </div>
-        </div>
-      </div>
-
-      {/* Methodology & Verification Standards */}
-      <div className="p-5 bg-stone-50 rounded-2xl border border-stone-200 text-xs text-stone-600 space-y-2">
-        <div className="font-bold text-stone-800 flex items-center gap-1.5">
-          <Info className="w-4 h-4 text-stone-500" />
-          Transparent Impact Methodology & Standards
-        </div>
-        <p className="leading-relaxed">
-          1. <strong>Direct Firestore Documents:</strong> Figures are calculated from live records without mock extrapolation.
-        </p>
-        <p className="leading-relaxed">
-          2. <strong>Meal Equivalent Standard:</strong> Food recorded in kilograms is converted at 400g (0.4 kg) per standard nutritional meal equivalent (UN FAO & Global FoodBanking Network guidelines).
-        </p>
-        <p className="leading-relaxed">
-          3. <strong>Environmental Conversions:</strong> Greenhouse gas prevention is modelled at 2.5 kg CO₂e per 1 kg of edible organic surplus diverted from anaerobic landfill decomposition. Freshwater conservation reflects average embodied irrigation and processing water (~1,000 L / kg).
-        </p>
-      </div>
+      <ImpactMethodology
+        waterSavedLiters={waterSavedLiters}
+        co2AvoidedKg={co2AvoidedKg}
+      />
 
       {/* ========================================================================= */}
       {/* PRINTABLE SUMMARY MODAL & STATEMENT DOCUMENT                              */}

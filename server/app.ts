@@ -1,10 +1,9 @@
 import express, { Request, Response, NextFunction, Router } from 'express';
 import crypto from 'crypto';
 import rateLimit from 'express-rate-limit';
-import { initializeApp, getApps } from 'firebase-admin/app';
 import { getAuth } from 'firebase-admin/auth';
-import { getFirestore } from 'firebase-admin/firestore';
 import { getMessaging } from 'firebase-admin/messaging';
+import { getAdminApp, adminDb } from './firebaseAdmin.js';
 import {
   handleCategorySuggestion,
   handleMatchInsights,
@@ -17,25 +16,14 @@ import {
   stopExpirationCron,
   getExpirationJobStatus,
 } from './expirationJob.js';
+import { handleAcceptVolunteerDonation } from './donationActions.js';
 
 export const app = express();
+app.set('trust proxy', 1);
+app.disable('x-powered-by');
 
-// Initialize Firebase Admin SDK if not already initialized
-if (!getApps().length) {
-  const projectId =
-    process.env.FIREBASE_PROJECT_ID ||
-    process.env.VITE_FIREBASE_PROJECT_ID ||
-    'omega-plexus-n14dk';
-
-  try {
-    initializeApp({
-      projectId,
-    });
-    console.info(`[Firebase Admin] Initialized with project ID: ${projectId}`);
-  } catch (err) {
-    console.warn('[Firebase Admin] Initialization notice:', err);
-  }
-}
+// Ensure Firebase Admin is initialized via centralized helper
+getAdminApp();
 
 // Request payload limit & JSON parser
 app.use(express.json({ limit: '1mb' }));
@@ -137,15 +125,8 @@ export interface AuthenticatedUser {
 export function requireAuth(req: Request, res: Response, next: NextFunction) {
   const authHeader = req.headers?.authorization || (req.headers as any)?.['Authorization'];
 
-  // Test environment fallback: permit simulated unit-test runner calls
-  if (isTestOrMockRequest(req) && !authHeader) {
-    if (!(req as any).user) {
-      (req as any).user = {
-        uid: 'test-authorized-user',
-        email: 'tester@foodrescue.org',
-        role: 'admin',
-      };
-    }
+  // Test environment fallback: if mock user was explicitly attached on request in test runner, continue
+  if (isTestOrMockRequest(req) && (req as any).user) {
     return next();
   }
 
@@ -161,7 +142,7 @@ export function requireAuth(req: Request, res: Response, next: NextFunction) {
   }
 
   // Handle mock test tokens in unit test suites
-  if (idToken.startsWith('mock-token-')) {
+  if (isTestOrMockRequest(req) && idToken.startsWith('mock-token-')) {
     const parts = idToken.split('-');
     const uid = parts[2] || 'test-user';
     const role = parts[3] || 'volunteer';
@@ -174,7 +155,7 @@ export function requireAuth(req: Request, res: Response, next: NextFunction) {
     return next();
   }
 
-  getAuth()
+  getAuth(getAdminApp())
     .verifyIdToken(idToken)
     .then(async (decodedToken) => {
       if (!decodedToken || !decodedToken.uid) {
@@ -185,11 +166,11 @@ export function requireAuth(req: Request, res: Response, next: NextFunction) {
       let role = (decodedToken as any).role;
       if (!role) {
         try {
-          const adminDoc = await getFirestore().collection('admins').doc(decodedToken.uid).get();
+          const adminDoc = await adminDb().collection('admins').doc(decodedToken.uid).get();
           if (adminDoc.exists) {
             role = 'admin';
           } else {
-            const userDoc = await getFirestore().collection('users').doc(decodedToken.uid).get();
+            const userDoc = await adminDb().collection('users').doc(decodedToken.uid).get();
             if (userDoc.exists) {
               role = userDoc.data()?.role;
             }
@@ -212,9 +193,34 @@ export function requireAuth(req: Request, res: Response, next: NextFunction) {
       console.warn('[requireAuth] verifyIdToken rejected:', verifyError?.message || verifyError);
       return sendJson(res, 401, {
         error: 'Unauthorized: Firebase ID token verification failed',
-        details: verifyError?.message,
       });
     });
+}
+
+/**
+ * Middleware: permits cron callers with Bearer CRON_SECRET or authenticated admins.
+ * Test/mock requests are allowed through for automated test suites.
+ */
+export function requireCronOrAdmin(req: Request, res: Response, next: NextFunction) {
+  if (isTestOrMockRequest(req)) {
+    return next();
+  }
+
+  const cronSecret = process.env.CRON_SECRET;
+  const authHeader = req.headers?.authorization || (req.headers as any)?.['Authorization'];
+  if (cronSecret && authHeader === `Bearer ${cronSecret}`) {
+    return next();
+  }
+
+  return requireAuth(req, res, () => {
+    const user = (req as any).user as AuthenticatedUser | undefined;
+    if (user?.role === 'admin') {
+      return next();
+    }
+    return sendJson(res, 403, {
+      error: 'Forbidden: Admin role or valid CRON_SECRET Bearer token required',
+    });
+  });
 }
 
 // Create dedicated API router
@@ -250,7 +256,7 @@ apiRouter.get('/notifications/fcm-status', (req: Request, res: Response) => {
   sendJson(res, 200, {
     status: 'ok',
     fcmEnabled: true,
-    messagingSenderId: '1073054435184',
+    messagingSenderId: process.env.VITE_FIREBASE_MESSAGING_SENDER_ID || '1073054435184',
     serviceWorkerScope: '/',
     serviceWorkerFile: '/firebase-messaging-sw.js',
     vapidKeyConfigured: hasVapidKey,
@@ -260,7 +266,7 @@ apiRouter.get('/notifications/fcm-status', (req: Request, res: Response) => {
 
 // GET /api/jobs/expiration-status
 // Inspect current state, interval, and metrics of the scheduled food safety monitor
-apiRouter.get('/jobs/expiration-status', (req: Request, res: Response) => {
+apiRouter.get('/jobs/expiration-status', requireCronOrAdmin, (req: Request, res: Response) => {
   const status = getExpirationJobStatus();
   sendJson(res, 200, {
     status: 'ok',
@@ -273,7 +279,7 @@ apiRouter.get('/jobs/expiration-status', (req: Request, res: Response) => {
 // Scheduled scan trigger: can be invoked by Vercel Cron, external cron webhook, or administrator
 const handleExpireDonationsJob = async (req: Request, res: Response) => {
   try {
-    const customTime = req.body?.timestamp || req.query?.timestamp;
+    const customTime = isTestOrMockRequest(req) ? (req.body?.timestamp || req.query?.timestamp) : undefined;
     const nowMs = customTime ? new Date(String(customTime)).getTime() : Date.now();
     const effectiveNow = isNaN(nowMs) ? Date.now() : nowMs;
 
@@ -288,9 +294,9 @@ const handleExpireDonationsJob = async (req: Request, res: Response) => {
   }
 };
 
-apiRouter.post('/jobs/expire-donations', handleExpireDonationsJob);
-apiRouter.get('/jobs/expire-donations', handleExpireDonationsJob);
-apiRouter.post('/jobs/cleanup-expired', handleExpireDonationsJob);
+apiRouter.post('/jobs/expire-donations', requireCronOrAdmin, handleExpireDonationsJob);
+apiRouter.get('/jobs/expire-donations', requireCronOrAdmin, handleExpireDonationsJob);
+apiRouter.post('/jobs/cleanup-expired', requireCronOrAdmin, handleExpireDonationsJob);
 
 // ----------------------------------------------------
 // Authenticated Protected Endpoints (requireAuth)
@@ -381,7 +387,7 @@ apiRouter.post('/gemini/mithra-chat', requireAuth, geminiLimiter, async (req: Re
 export async function cleanupInvalidTokens(tokens: string[]): Promise<void> {
   if (!tokens || tokens.length === 0) return;
   try {
-    const firestore = getFirestore();
+    const firestore = adminDb();
     for (const tok of tokens) {
       if (!tok) continue;
       // Remove from users
@@ -417,11 +423,11 @@ apiRouter.post('/notifications/fcm-send', requireAuth, notificationsLimiter, asy
     const user = (req as any).user as AuthenticatedUser;
     const { title, body, donationId, tokens, volunteerIds, url, pickupDeadline } = req.body || {};
 
-    if (!title || typeof title !== 'string') {
-      return sendJson(res, 400, { error: 'title is required and must be a string' });
+    if (!title || typeof title !== 'string' || title.length > 120) {
+      return sendJson(res, 400, { error: 'title is required and must be a string up to 120 characters' });
     }
-    if (!body || typeof body !== 'string') {
-      return sendJson(res, 400, { error: 'body is required and must be a string' });
+    if (!body || typeof body !== 'string' || body.length > 500) {
+      return sendJson(res, 400, { error: 'body is required and must be a string up to 500 characters' });
     }
 
     const rawTokens: string[] = Array.isArray(tokens)
@@ -429,27 +435,37 @@ apiRouter.post('/notifications/fcm-send', requireAuth, notificationsLimiter, asy
       : [];
     // Deduplicate tokens to avoid sending duplicate notifications
     const recipientTokens: string[] = Array.from(new Set(rawTokens));
+    if (recipientTokens.length > 100) {
+      return sendJson(res, 400, { error: 'Cannot send to more than 100 tokens at a time' });
+    }
     const recipientVolunteers: string[] = Array.isArray(volunteerIds) ? volunteerIds : [];
 
     // Authorization check: verify caller is allowed to broadcast notifications for this donation
-    if (donationId && !isTestOrMockRequest(req)) {
-      try {
-        const donationSnap = await getFirestore().collection('donations').doc(donationId).get();
-        if (donationSnap.exists) {
-          const dData = donationSnap.data();
-          const isOwner = dData?.donorId === user.uid;
-          const isAssignedNgo = dData?.assignedNgoId === user.uid;
-          const isAssignedVolunteer = dData?.assignedVolunteerId === user.uid;
-          const isAdminUser = user.role === 'admin';
+    if (!isTestOrMockRequest(req)) {
+      if (!donationId || typeof donationId !== 'string') {
+        return sendJson(res, 400, { error: 'donationId is required' });
+      }
 
-          if (!isOwner && !isAssignedNgo && !isAssignedVolunteer && !isAdminUser) {
-            return sendJson(res, 403, {
-              error: 'Forbidden: You are not authorized to dispatch notifications for this donation listing.',
-            });
-          }
+      try {
+        const donationSnap = await adminDb().collection('donations').doc(donationId).get();
+        if (!donationSnap.exists) {
+          return sendJson(res, 404, { error: 'Donation not found' });
         }
-      } catch (checkErr) {
-        console.warn('[FCM Auth] Donation verification check warning:', checkErr);
+
+        const dData = donationSnap.data();
+        const isOwner = dData?.donorId === user.uid;
+        const isAssignedNgo = dData?.assignedNgoId === user.uid;
+        const isAssignedVolunteer = dData?.assignedVolunteerId === user.uid;
+        const isAdminUser = user.role === 'admin';
+
+        if (!isOwner && !isAssignedNgo && !isAssignedVolunteer && !isAdminUser) {
+          return sendJson(res, 403, {
+            error: 'Forbidden: You are not authorized to dispatch notifications for this donation listing.',
+          });
+        }
+      } catch (checkErr: any) {
+        console.error('[FCM Auth] Donation verification check failure:', checkErr);
+        return sendJson(res, 503, { error: 'Service Unavailable: Unable to verify donation permissions' });
       }
     }
 
@@ -462,7 +478,7 @@ apiRouter.post('/notifications/fcm-send', requireAuth, notificationsLimiter, asy
       successCount = recipientTokens.length > 0 ? recipientTokens.length : (recipientVolunteers.length > 0 ? recipientVolunteers.length : 1);
     } else if (recipientTokens.length > 0) {
       try {
-        const multicastResponse = await getMessaging().sendEachForMulticast({
+        const multicastResponse = await getMessaging(getAdminApp()).sendEachForMulticast({
           tokens: recipientTokens,
           notification: {
             title,
@@ -499,8 +515,9 @@ apiRouter.post('/notifications/fcm-send', requireAuth, notificationsLimiter, asy
           }
         }
       } catch (fcmAdminErr: any) {
-        console.warn('[FCM Admin] HTTP v1 dispatch notice (falling back if local emulator):', fcmAdminErr?.message || fcmAdminErr);
-        successCount = recipientTokens.length;
+        console.warn('[FCM Admin] HTTP v1 dispatch failure:', fcmAdminErr?.message || fcmAdminErr);
+        failureCount = recipientTokens.length;
+        successCount = 0;
       }
     } else {
       successCount = recipientVolunteers.length > 0 ? recipientVolunteers.length : 1;
@@ -534,7 +551,7 @@ apiRouter.post('/notifications/test-push', requireAuth, notificationsLimiter, as
     let targetToken = token;
     if (!targetToken && !isTestOrMockRequest(req)) {
       try {
-        const userDoc = await getFirestore().collection('users').doc(user.uid).get();
+        const userDoc = await adminDb().collection('users').doc(user.uid).get();
         targetToken = userDoc.data()?.fcmToken;
       } catch {
         // ignore
@@ -557,7 +574,7 @@ apiRouter.post('/notifications/test-push', requireAuth, notificationsLimiter, as
     }
 
     try {
-      const messageId = await getMessaging().send({
+      const messageId = await getMessaging(getAdminApp()).send({
         token: targetToken,
         notification: {
           title: pushTitle,
@@ -577,10 +594,9 @@ apiRouter.post('/notifications/test-push', requireAuth, notificationsLimiter, as
       });
     } catch (sendErr: any) {
       console.warn('[FCM Test] send error:', sendErr?.message || sendErr);
-      sendJson(res, 200, {
-        success: true,
-        simulated: true,
-        message: `FCM test dispatched (notice: ${sendErr?.message || 'delivered'})`,
+      return sendJson(res, 502, {
+        success: false,
+        message: sendErr?.message || 'Failed to dispatch test notification',
       });
     }
   } catch (error: any) {
@@ -606,7 +622,7 @@ apiRouter.get('/verify/:donationId/token', requireAuth, async (req: Request, res
       return sendJson(res, 400, { error: 'donationId is required' });
     }
 
-    const donRef = getFirestore().collection('donations').doc(donationId);
+    const donRef = adminDb().collection('donations').doc(donationId);
     const donSnap = await donRef.get();
 
     if (!donSnap.exists) {
@@ -625,7 +641,7 @@ apiRouter.get('/verify/:donationId/token', requireAuth, async (req: Request, res
     }
 
     // Retrieve or atomically generate verification record server-side
-    const verRef = getFirestore().collection('verifications').doc(donationId);
+    const verRef = adminDb().collection('verifications').doc(donationId);
     let verSnap = await verRef.get();
 
     if (!verSnap.exists) {
@@ -695,9 +711,9 @@ apiRouter.post('/verify/pickup', requireAuth, verificationLimiter, async (req: R
     const volunteerId = user.uid;
     const actorName = String(volunteerName || user.email?.split('@')[0] || 'Authorized Courier');
 
-    const result = await getFirestore().runTransaction(async (tx) => {
-      const donRef = getFirestore().collection('donations').doc(donationId);
-      const verRef = getFirestore().collection('verifications').doc(donationId);
+    const result = await adminDb().runTransaction(async (tx) => {
+      const donRef = adminDb().collection('donations').doc(donationId);
+      const verRef = adminDb().collection('verifications').doc(donationId);
 
       const [donSnap, verSnap] = await Promise.all([tx.get(donRef), tx.get(verRef)]);
 
@@ -708,6 +724,11 @@ apiRouter.post('/verify/pickup', requireAuth, verificationLimiter, async (req: R
       const donation = donSnap.data();
       if (!['accepted', 'scheduled'].includes(donation?.status)) {
         throw new Error(`Invalid status transition: donation status is "${donation?.status}". Must be accepted or scheduled to verify pickup.`);
+      }
+
+      // Check volunteer assignment mismatch
+      if (donation?.assignedVolunteerId && donation.assignedVolunteerId !== volunteerId) {
+        throw new Error('This pickup is assigned to a different volunteer.');
       }
 
       if (!verSnap.exists) {
@@ -774,7 +795,7 @@ apiRouter.post('/verify/pickup', requireAuth, verificationLimiter, async (req: R
       });
 
       // Write server-side audit log
-      const auditRef = getFirestore().collection('auditLogs').doc();
+      const auditRef = adminDb().collection('auditLogs').doc();
       tx.set(auditRef, {
         id: auditRef.id,
         action: 'VERIFY_PICKUP',
@@ -815,9 +836,9 @@ apiRouter.post('/verify/delivery', requireAuth, verificationLimiter, async (req:
     const verifierId = user.uid;
     const actorName = String(verifierName || user.email?.split('@')[0] || 'Shelter Coordinator');
 
-    const result = await getFirestore().runTransaction(async (tx) => {
-      const donRef = getFirestore().collection('donations').doc(donationId);
-      const verRef = getFirestore().collection('verifications').doc(donationId);
+    const result = await adminDb().runTransaction(async (tx) => {
+      const donRef = adminDb().collection('donations').doc(donationId);
+      const verRef = adminDb().collection('verifications').doc(donationId);
 
       const [donSnap, verSnap] = await Promise.all([tx.get(donRef), tx.get(verRef)]);
 
@@ -900,7 +921,7 @@ apiRouter.post('/verify/delivery', requireAuth, verificationLimiter, async (req:
       const estimatedMeals = servings || Math.round(quantityKg * 2.5);
 
       // Create server-side verified ImpactRecord
-      const impactRef = getFirestore().collection('impactRecords').doc();
+      const impactRef = adminDb().collection('impactRecords').doc();
       tx.set(impactRef, {
         id: impactRef.id,
         donationId,
@@ -914,7 +935,7 @@ apiRouter.post('/verify/delivery', requireAuth, verificationLimiter, async (req:
       });
 
       // Create server-side AuditLog
-      const auditRef = getFirestore().collection('auditLogs').doc();
+      const auditRef = adminDb().collection('auditLogs').doc();
       tx.set(auditRef, {
         id: auditRef.id,
         action: 'VERIFY_DELIVERY',
@@ -937,12 +958,17 @@ apiRouter.post('/verify/delivery', requireAuth, verificationLimiter, async (req:
   }
 });
 
+// POST /api/donations/accept-volunteer
+// Atomic volunteer acceptance transaction with audit logging & collision prevention
+apiRouter.post('/donations/accept-volunteer', requireAuth, verificationLimiter, handleAcceptVolunteerDonation);
+apiRouter.post('/donations/accept', requireAuth, verificationLimiter, handleAcceptVolunteerDonation);
+
 // Mount router on /api and root
 app.use('/api', apiRouter);
 app.use(apiRouter);
 
 // Start scheduled background expiration monitoring in server environments
-if (process.env.NODE_ENV !== 'test' && !process.env.DISABLE_CRON) {
+if (process.env.NODE_ENV !== 'test' && !process.env.DISABLE_CRON && !process.env.VERCEL) {
   try {
     startExpirationCron();
   } catch (cronErr) {

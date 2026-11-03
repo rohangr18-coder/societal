@@ -1,5 +1,5 @@
-import { getFirestore } from 'firebase-admin/firestore';
 import { getMessaging } from 'firebase-admin/messaging';
+import { getAdminApp, adminDb } from './firebaseAdmin.js';
 import { isDonationExpired, computeSafeUntil } from '../src/utils/foodSafety.js';
 
 export interface ExpirationScanResult {
@@ -42,7 +42,7 @@ export async function scanAndExpireOverdueDonations(nowMs: number = Date.now()):
   let scannedCount = 0;
 
   try {
-    const firestore = getFirestore();
+    const firestore = adminDb();
 
     // Query active uncollected donations: available, requested, accepted, scheduled
     const activeStatuses = ['available', 'requested', 'accepted', 'scheduled'];
@@ -134,7 +134,7 @@ export async function scanAndExpireOverdueDonations(nowMs: number = Date.now()):
                 const tokens = donorData.fcmTokens || [donorData.fcmToken];
                 const validTokens = tokens.filter((t: any) => typeof t === 'string' && t.length > 0);
                 if (validTokens.length > 0) {
-                  await getMessaging().sendEachForMulticast({
+                  await getMessaging(getAdminApp()).sendEachForMulticast({
                     tokens: validTokens,
                     notification: {
                       title: '⚠️ Food Safety: Donation Expired',
@@ -235,7 +235,7 @@ export async function scanAndExpireOverdueDonations(nowMs: number = Date.now()):
     };
   } catch (err: any) {
     const errorMsg = err?.message || String(err);
-    console.error('[Expiration Job] Scan failed with error:', errorMsg);
+    console.warn('[Expiration Job] Scan status notice:', errorMsg);
     lastError = errorMsg;
     return {
       success: false,

@@ -448,23 +448,7 @@ export const VolunteerQRScannerModal: React.FC<VolunteerQRScannerModalProps> = (
           setVerificationError(res.message || 'Pickup verification code was rejected.');
         }
       } else {
-        // Direct courier status transition flow using donation ID
-        const res = await transitionCollectionStatus(
-          donation.id,
-          'picked_up',
-          currentUser.uid,
-          actorName,
-          `Courier scanned donor display screen and confirmed pickup handover for donation ${donation.id}`
-        );
-
-        if (res.success) {
-          setVerificationSuccess(
-            `Pickup verified for "${donation.foodName}"! Status successfully updated to PICKED UP.`
-          );
-          onPickupVerified(donation.id);
-        } else {
-          setVerificationError(res.message || 'Failed to update pickup status.');
-        }
+        setVerificationError('Please enter the 6-digit Pickup PIN shown on the donor\'s screen or scan their pickup QR code.');
       }
     } catch (err: any) {
       console.error('[VolunteerQRScanner] Error executing pickup verification:', err);

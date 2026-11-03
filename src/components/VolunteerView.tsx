@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import {
   Bike,
   Car,
@@ -52,6 +52,13 @@ import { LiveTrackingMap } from './LiveTrackingMap';
 import { VolunteerNotificationsSlideOver } from './VolunteerNotificationsSlideOver';
 import { VolunteerClusterMap } from './VolunteerClusterMap';
 import { VolunteerQRScannerModal } from './VolunteerQRScannerModal';
+import { AvailableCollectionCard } from './volunteer/AvailableCollectionCard';
+import { ActiveCollectionCard } from './volunteer/ActiveCollectionCard';
+import { VolunteerHistoryTab } from './volunteer/VolunteerHistoryTab';
+import { VolunteerSettingsTab } from './volunteer/VolunteerSettingsTab';
+import { VolunteerCancellationModal } from './volunteer/VolunteerCancellationModal';
+import { VolunteerStatsHeader } from './volunteer/VolunteerStatsHeader';
+import { QRVerificationModal } from './QRVerificationModal';
 import {
   isFcmSupported,
   enableVolunteerPushNotifications,
@@ -80,6 +87,7 @@ export const VolunteerView: React.FC<VolunteerViewProps> = ({
   const [claimingDonationId, setClaimingDonationId] = useState<string | null>(null);
   const [statusUpdating, setStatusUpdating] = useState(false);
   const [actionMessage, setActionMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  const [recentlyAccepted, setRecentlyAccepted] = useState<Donation[]>([]);
 
   // Cancellation modal state
   const [cancelModalDonation, setCancelModalDonation] = useState<Donation | null>(null);
@@ -117,6 +125,13 @@ export const VolunteerView: React.FC<VolunteerViewProps> = ({
 
   // Volunteer QR Scanner modal state
   const [scannerOpen, setScannerOpen] = useState<boolean>(false);
+
+  // Delivery & Pickup QR Verification modal state
+  const [qrModal, setQrModal] = useState<{
+    isOpen: boolean;
+    mode: 'scan_pickup' | 'scan_delivery';
+    donation: Donation | null;
+  }>({ isOpen: false, mode: 'scan_pickup', donation: null });
 
   // Subscribe to real-time notifications for unread count indicator
   useEffect(() => {
@@ -343,6 +358,15 @@ export const VolunteerView: React.FC<VolunteerViewProps> = ({
     setClaimingDonationId(donation.id);
     setActionMessage(null);
 
+    // If authenticated user is not yet designated as volunteer, promote role
+    if (userProfile && userProfile.role !== 'volunteer') {
+      try {
+        await updateRole('volunteer');
+      } catch (roleErr) {
+        console.warn('Volunteer role notice:', roleErr);
+      }
+    }
+
     const volunteerName =
       userProfile?.displayName || currentUser.email?.split('@')[0] || 'Volunteer Courier';
     const volunteerPhone = userProfile?.phone || profile?.phone || '+91 98765 43210';
@@ -356,6 +380,9 @@ export const VolunteerView: React.FC<VolunteerViewProps> = ({
       );
 
       if (res.success) {
+        if (res.donation) {
+          setRecentlyAccepted((prev) => [res.donation!, ...prev.filter((d) => d.id !== res.donation!.id)]);
+        }
         setActionMessage({
           type: 'success',
           text: `Success! Collection request "${donation.foodName}" has been safely assigned to you.`,
@@ -415,6 +442,16 @@ export const VolunteerView: React.FC<VolunteerViewProps> = ({
   // State transitions: ACCEPTED -> PICKED_UP -> IN_TRANSIT -> DELIVERED -> COMPLETED
   const handleTransitionStatus = async (donation: Donation, nextStatus: DonationStatus) => {
     if (!currentUser) return;
+
+    if (nextStatus === 'picked_up') {
+      setScannerOpen(true);
+      return;
+    }
+    if (nextStatus === 'delivered') {
+      setQrModal({ isOpen: true, mode: 'scan_delivery', donation });
+      return;
+    }
+
     setStatusUpdating(true);
     setActionMessage(null);
 
@@ -458,66 +495,64 @@ export const VolunteerView: React.FC<VolunteerViewProps> = ({
     const deadline = d.collectionDeadline || d.pickupDeadline;
     if (!deadline) return false;
     const t = new Date(deadline).getTime();
-    if (!isNaN(t) && t < Date.now()) return true;
-    return false;
+    return !isNaN(t) && t < Date.now();
   };
 
   const getRemainingTimeInfo = (d: Donation) => {
     const deadline = d.collectionDeadline || d.pickupDeadline;
-    if (!deadline) {
-      return { label: 'Urgent', isUrgent: false, isExpired: false, minutesRemaining: 999 };
-    }
+    if (!deadline) return { label: 'Urgent', isUrgent: false, isExpired: false, minutesRemaining: 999 };
     const t = new Date(deadline).getTime();
-    if (isNaN(t)) {
-      return { label: deadline, isUrgent: false, isExpired: false, minutesRemaining: 999 };
-    }
+    if (isNaN(t)) return { label: deadline, isUrgent: false, isExpired: false, minutesRemaining: 999 };
     const diffMs = t - Date.now();
-    if (diffMs <= 0) {
-      return { label: 'Expired', isUrgent: false, isExpired: true, minutesRemaining: 0 };
-    }
+    if (diffMs <= 0) return { label: 'Expired', isUrgent: false, isExpired: true, minutesRemaining: 0 };
     const totalMins = Math.floor(diffMs / (1000 * 60));
     const hours = Math.floor(totalMins / 60);
     const mins = totalMins % 60;
-    const isUrgent = totalMins <= 45;
-
-    let label = '';
-    if (hours > 0) {
-      label = `${hours}h ${mins}m remaining`;
-    } else {
-      label = `${mins}m remaining`;
-    }
-    return { label, isUrgent, isExpired: false, minutesRemaining: totalMins };
+    return {
+      label: hours > 0 ? `${hours}h ${mins}m remaining` : `${mins}m remaining`,
+      isUrgent: totalMins <= 45,
+      isExpired: false,
+      minutesRemaining: totalMins,
+    };
   };
 
   const formatPickupWindow = (d: Donation): string => {
     const today = new Date().toISOString().split('T')[0];
     const dateLabel = d.pickupDate ? (d.pickupDate === today ? 'Today' : d.pickupDate) : 'Today';
-    if (d.availableFrom && d.availableUntil) {
-      return `${dateLabel}, ${d.availableFrom} – ${d.availableUntil} (${d.timeZone || 'Asia/Kolkata'})`;
-    }
-    return `${dateLabel}, ${d.pickupDeadline || 'As soon as possible'}`;
+    return d.availableFrom && d.availableUntil
+      ? `${dateLabel}, ${d.availableFrom} – ${d.availableUntil} (${d.timeZone || 'Asia/Kolkata'})`
+      : `${dateLabel}, ${d.pickupDeadline || 'As soon as possible'}`;
   };
 
-  // Filter available collections: exclude expired or already claimed donations
+  // Filter available collections: exclude expired, claimed, or recently accepted donations
   const availableCollections = donations
-    .filter((d) => (d.status === 'available' || d.status === 'requested') && !isDonationExpired(d) && !d.assignedVolunteerId)
-    .map((d) => {
-      const dist =
-        d.latitude && d.longitude
-          ? calculateDistanceKmSafe(volLat, volLng, d.latitude, d.longitude, 0)
-          : 0;
-      return { ...d, distanceKm: dist };
-    })
+    .filter(
+      (d) =>
+        (d.status === 'available' || d.status === 'requested') &&
+        !isDonationExpired(d) &&
+        !d.assignedVolunteerId &&
+        !recentlyAccepted.some((r) => r.id === d.id)
+    )
+    .map((d) => ({
+      ...d,
+      distanceKm: d.latitude && d.longitude ? calculateDistanceKmSafe(volLat, volLng, d.latitude, d.longitude, 0) : 0,
+    }))
     .filter((d) => selectedRadiusFilter === 0 || d.distanceKm <= selectedRadiusFilter)
     .sort((a, b) => a.distanceKm - b.distanceKm);
 
-  // Active collection for this volunteer
-  const activeCollections = donations.filter(
-    (d) =>
-      currentUser &&
-      d.assignedVolunteerId === currentUser.uid &&
-      ['accepted', 'scheduled', 'picked_up', 'in_transit'].includes(d.status)
-  );
+  // Active collection for this volunteer (snapshot merged with local immediate accepts)
+  const activeCollections = useMemo(() => {
+    const list = donations.filter(
+      (d) =>
+        currentUser &&
+        d.assignedVolunteerId === currentUser.uid &&
+        ['accepted', 'scheduled', 'picked_up', 'in_transit'].includes(d.status)
+    );
+    for (const r of recentlyAccepted) {
+      if (!list.some((d) => d.id === r.id)) list.unshift(r);
+    }
+    return list;
+  }, [donations, currentUser, recentlyAccepted]);
 
   // Completed collections for this volunteer
   const completedCollections = donations.filter(
@@ -528,17 +563,9 @@ export const VolunteerView: React.FC<VolunteerViewProps> = ({
   );
 
   // Total metrics
-  const totalMealsDelivered = completedCollections.reduce(
-    (acc, cur) => acc + (cur.servings || Math.round(cur.quantity * 2.5)),
-    0
-  );
+  const totalMealsDelivered = completedCollections.reduce((acc, cur) => acc + (cur.servings || Math.round(cur.quantity * 2.5)), 0);
   const totalKgRescued = completedCollections.reduce((acc, cur) => {
-    const kg =
-      cur.unit.toLowerCase() === 'kg'
-        ? cur.quantity
-        : cur.servings
-        ? cur.servings * 0.4
-        : cur.quantity * 0.5;
+    const kg = cur.unit.toLowerCase() === 'kg' ? cur.quantity : cur.servings ? cur.servings * 0.4 : cur.quantity * 0.5;
     return acc + Math.round(kg);
   }, 0);
 
@@ -546,248 +573,136 @@ export const VolunteerView: React.FC<VolunteerViewProps> = ({
     <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
       {/* Alert / Feedback Toast */}
       {actionMessage && (
-        <div
-          className={`mb-6 p-4 rounded-2xl flex items-center justify-between gap-3 shadow-xs animate-in fade-in duration-200 ${
-            actionMessage.type === 'success'
-              ? 'bg-emerald-50 border border-emerald-200 text-emerald-900'
-              : 'bg-rose-50 border border-rose-200 text-rose-900'
-          }`}
-        >
+        <div className={`mb-6 p-4 rounded-2xl flex items-center justify-between gap-3 shadow-xs animate-in fade-in duration-200 ${actionMessage.type === 'success' ? 'bg-emerald-50 border border-emerald-200 text-emerald-900' : 'bg-rose-50 border border-rose-200 text-rose-900'}`}>
           <div className="flex items-center gap-3 text-sm font-medium">
-            {actionMessage.type === 'success' ? (
-              <CheckCircle2 className="w-5 h-5 text-emerald-600 shrink-0" />
-            ) : (
-              <AlertCircle className="w-5 h-5 text-rose-600 shrink-0" />
-            )}
+            {actionMessage.type === 'success' ? <CheckCircle2 className="w-5 h-5 text-emerald-600 shrink-0" /> : <AlertCircle className="w-5 h-5 text-rose-600 shrink-0" />}
             <span>{actionMessage.text}</span>
           </div>
-          <button
-            onClick={() => setActionMessage(null)}
-            className="text-xs font-bold uppercase tracking-wider text-stone-500 hover:text-stone-800"
-          >
+          <button onClick={() => setActionMessage(null)} className="text-xs font-bold uppercase tracking-wider text-stone-500 hover:text-stone-800 cursor-pointer">
             Dismiss
           </button>
         </div>
       )}
 
-      {/* Role Activation Banner if user is not currently in volunteer mode */}
-      {currentUser && userProfile?.role !== 'volunteer' && (
-        <div className="mb-8 p-6 bg-gradient-to-r from-emerald-900 via-teal-900 to-stone-900 rounded-3xl text-white shadow-xl flex flex-col md:flex-row items-start md:items-center justify-between gap-6">
-          <div className="space-y-2 max-w-2xl">
-            <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-emerald-500/20 text-emerald-300 text-xs font-bold uppercase tracking-wider">
-              <Sparkles className="w-3.5 h-3.5" />
-              <span>Join the Food Rescue Fleet</span>
-            </div>
-            <h2 className="text-xl sm:text-2xl font-black tracking-tight">
-              Collect Donated Food & Feed Your Community
-            </h2>
-            <p className="text-stone-300 text-xs sm:text-sm leading-relaxed">
-              You are currently signed in as a <span className="font-bold text-white capitalize">{userProfile?.role || 'Guest'}</span>.
-              Switch to the <span className="text-emerald-400 font-bold">Volunteer Courier</span> role to accept surplus food pickups,
-              track collections with live GPS, and deliver meals to partner shelters.
-            </p>
-          </div>
-          <button
-            onClick={handleActivateVolunteerRole}
-            className="bg-emerald-500 hover:bg-emerald-400 text-stone-950 font-black text-sm px-6 py-3 rounded-2xl shadow-lg transition-transform hover:scale-105 shrink-0 flex items-center gap-2 cursor-pointer"
-          >
-            <UserCheck className="w-5 h-5" />
-            <span>Enable Volunteer Courier Mode</span>
-          </button>
-        </div>
-      )}
-
-      {/* Hero Volunteer Command Center Header */}
-      <div className="bg-white rounded-3xl p-6 sm:p-8 border border-emerald-100 shadow-sm mb-8">
-        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-6">
-          <div className="space-y-3">
-            <div className="flex items-center gap-3">
-              <div className="w-12 h-12 rounded-2xl bg-gradient-to-br from-emerald-600 to-teal-700 text-white flex items-center justify-center shadow-md">
-                <Bike className="w-6 h-6" />
-              </div>
-              <div>
-                <h1 className="text-2xl sm:text-3xl font-black text-stone-900 tracking-tight flex items-center gap-2">
-                  Volunteer Rescue Center
-                  {isAvailable ? (
-                    <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-bold bg-emerald-100 text-emerald-800">
-                      <span className="w-2 h-2 rounded-full bg-emerald-600 animate-pulse"></span>
-                      On-Duty
-                    </span>
-                  ) : (
-                    <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-bold bg-stone-200 text-stone-700">
-                      Off-Duty
-                    </span>
-                  )}
-                </h1>
-                <p className="text-xs sm:text-sm text-stone-500">
-                  Accept nearby surplus donations, navigate routes, and deliver nutrition directly to hungry families.
-                </p>
-              </div>
-            </div>
-
-            {/* Quick telemetry pills */}
-            <div className="flex flex-wrap items-center gap-2.5 text-xs text-stone-600 pt-1">
-              <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-xl bg-stone-100 font-semibold">
-                <MapPin className="w-3.5 h-3.5 text-emerald-600" />
-                <span>Base Radius: {radiusKm} km</span>
-              </span>
-              <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-xl bg-stone-100 font-semibold">
-                <Navigation className="w-3.5 h-3.5 text-blue-600" />
-                <span>Vehicle: {vehicleType}</span>
-              </span>
-              <button
-                onClick={() => setNotificationsOpen(true)}
-                className="inline-flex items-center gap-1.5 px-3 py-1 rounded-xl bg-stone-100 hover:bg-stone-200 text-stone-700 font-semibold cursor-pointer transition-colors"
-                title="Open Recent Notifications Slide-over"
-              >
-                <Bell className={`w-3.5 h-3.5 ${unreadNotifCount > 0 ? 'text-emerald-600' : 'text-amber-600'}`} />
-                <span>Alerts: {optInNotifs ? 'Active' : 'Muted'}</span>
-                {unreadNotifCount > 0 && (
-                  <span className="px-1.5 py-0.2 rounded-full text-[10px] font-black bg-emerald-600 text-white">
-                    {unreadNotifCount}
-                  </span>
-                )}
-              </button>
-            </div>
-          </div>
-
-          {/* Quick Stats Grid */}
-          <div className="grid grid-cols-3 gap-3 sm:gap-4 shrink-0">
-            <div className="p-4 rounded-2xl bg-emerald-50/70 border border-emerald-100 text-center">
-              <div className="text-2xl sm:text-3xl font-black text-emerald-800">
-                {activeCollections.length}
-              </div>
-              <div className="text-[11px] font-bold text-emerald-700 uppercase tracking-wider mt-0.5">
-                Active Run
-              </div>
-            </div>
-            <div className="p-4 rounded-2xl bg-teal-50/70 border border-teal-100 text-center">
-              <div className="text-2xl sm:text-3xl font-black text-teal-800">
-                {completedCollections.length}
-              </div>
-              <div className="text-[11px] font-bold text-teal-700 uppercase tracking-wider mt-0.5">
-                Completed
-              </div>
-            </div>
-            <div className="p-4 rounded-2xl bg-amber-50/70 border border-amber-100 text-center">
-              <div className="text-2xl sm:text-3xl font-black text-amber-800">
-                {totalMealsDelivered}
-              </div>
-              <div className="text-[11px] font-bold text-amber-700 uppercase tracking-wider mt-0.5">
-                Meals Saved
-              </div>
-            </div>
-          </div>
-        </div>
-
-        {/* Tab Navigation */}
-        <div className="mt-8 pt-6 border-t border-stone-100 flex flex-wrap items-center gap-2">
-          <button
-            onClick={() => setActiveTab('available')}
-            className={`px-4 py-2.5 rounded-xl font-bold text-xs sm:text-sm flex items-center gap-2 transition-all cursor-pointer ${
-              activeTab === 'available'
-                ? 'bg-emerald-600 text-white shadow-xs'
-                : 'bg-stone-50 text-stone-600 hover:bg-stone-100'
+      <VolunteerStatsHeader
+        showRoleBanner={Boolean(currentUser && userProfile?.role !== 'volunteer')}
+        userRole={userProfile?.role}
+        isAvailable={isAvailable}
+        radiusKm={radiusKm}
+        vehicleType={vehicleType}
+        optInNotifs={optInNotifs}
+        unreadNotifCount={unreadNotifCount}
+        activeCount={activeCollections.length}
+        completedCount={completedCollections.length}
+        totalMealsDelivered={totalMealsDelivered}
+        onActivateRole={handleActivateVolunteerRole}
+        onOpenNotifications={() => setNotificationsOpen(true)}
+      >
+        <button
+          onClick={() => setActiveTab('available')}
+          className={`px-4 py-2.5 rounded-xl font-bold text-xs sm:text-sm flex items-center gap-2 transition-all cursor-pointer ${
+            activeTab === 'available'
+              ? 'bg-emerald-600 text-white shadow-xs'
+              : 'bg-stone-50 text-stone-600 hover:bg-stone-100'
+          }`}
+        >
+          <Compass className="w-4 h-4" />
+          <span>Available Collections</span>
+          <span
+            className={`px-2 py-0.5 rounded-full text-xs font-black ${
+              activeTab === 'available' ? 'bg-emerald-700 text-white' : 'bg-stone-200 text-stone-700'
             }`}
           >
-            <Compass className="w-4 h-4" />
-            <span>Available Collections</span>
-            <span
-              className={`px-2 py-0.5 rounded-full text-xs font-black ${
-                activeTab === 'available' ? 'bg-emerald-700 text-white' : 'bg-stone-200 text-stone-700'
-              }`}
-            >
-              {availableCollections.length}
+            {availableCollections.length}
+          </span>
+        </button>
+
+        <button
+          onClick={() => setActiveTab('active')}
+          className={`px-4 py-2.5 rounded-xl font-bold text-xs sm:text-sm flex items-center gap-2 transition-all cursor-pointer ${
+            activeTab === 'active'
+              ? 'bg-emerald-600 text-white shadow-xs'
+              : 'bg-stone-50 text-stone-600 hover:bg-stone-100'
+          }`}
+        >
+          <Radio className="w-4 h-4" />
+          <span>My Active Collections</span>
+          {activeCollections.length > 0 && (
+            <span className="px-2 py-0.5 rounded-full text-xs font-black bg-rose-500 text-white animate-pulse">
+              {activeCollections.length}
             </span>
-          </button>
+          )}
+        </button>
 
-          <button
-            onClick={() => setActiveTab('active')}
-            className={`px-4 py-2.5 rounded-xl font-bold text-xs sm:text-sm flex items-center gap-2 transition-all cursor-pointer ${
-              activeTab === 'active'
-                ? 'bg-emerald-600 text-white shadow-xs'
-                : 'bg-stone-50 text-stone-600 hover:bg-stone-100'
+        <button
+          onClick={() => setActiveTab('history')}
+          className={`px-4 py-2.5 rounded-xl font-bold text-xs sm:text-sm flex items-center gap-2 transition-all cursor-pointer ${
+            activeTab === 'history'
+              ? 'bg-emerald-600 text-white shadow-xs'
+              : 'bg-stone-50 text-stone-600 hover:bg-stone-100'
+          }`}
+        >
+          <PackageCheck className="w-4 h-4" />
+          <span>Completed History</span>
+          <span
+            className={`px-2 py-0.5 rounded-full text-xs font-black ${
+              activeTab === 'history' ? 'bg-emerald-700 text-white' : 'bg-stone-200 text-stone-700'
             }`}
           >
-            <Radio className="w-4 h-4" />
-            <span>My Active Collections</span>
-            {activeCollections.length > 0 && (
-              <span className="px-2 py-0.5 rounded-full text-xs font-black bg-rose-500 text-white animate-pulse">
-                {activeCollections.length}
-              </span>
+            {completedCollections.length}
+          </span>
+        </button>
+
+        <button
+          onClick={() => setActiveTab('settings')}
+          className={`px-4 py-2.5 rounded-xl font-bold text-xs sm:text-sm flex items-center gap-2 transition-all cursor-pointer ${
+            activeTab === 'settings'
+              ? 'bg-emerald-600 text-white shadow-xs'
+              : 'bg-stone-50 text-stone-600 hover:bg-stone-100'
+          }`}
+        >
+          <Sliders className="w-4 h-4" />
+          <span>Radius & Preferences</span>
+        </button>
+
+        {/* QR Code Scanner to scan Donor's display screen and trigger pickup */}
+        <button
+          onClick={() => setScannerOpen(true)}
+          className="ml-auto px-4 py-2.5 rounded-xl font-bold text-xs sm:text-sm flex items-center gap-2 bg-gradient-to-r from-emerald-700 to-teal-800 hover:from-emerald-800 hover:to-teal-900 text-white shadow-xs transition-all cursor-pointer"
+          title="Scan Donor Display Screen to Verify Pickup"
+        >
+          <Camera className="w-4 h-4" />
+          <span>Scan Donor Screen</span>
+        </button>
+
+        {/* Slide-over Recent Notifications Action Button */}
+        <button
+          onClick={() => setNotificationsOpen(true)}
+          className={`px-4 py-2.5 rounded-xl font-bold text-xs sm:text-sm flex items-center gap-2 transition-all cursor-pointer border ${
+            unreadNotifCount > 0
+              ? 'bg-emerald-50 text-emerald-900 border-emerald-300 hover:bg-emerald-100 shadow-xs'
+              : 'bg-white text-stone-700 border-stone-200 hover:bg-stone-50'
+          }`}
+          aria-label="Open Recent Notifications slide-over"
+        >
+          <div className="relative">
+            <Bell className={`w-4 h-4 ${unreadNotifCount > 0 ? 'text-emerald-700' : 'text-stone-500'}`} />
+            {unreadNotifCount > 0 && (
+              <span className="absolute -top-1 -right-1 w-2 h-2 rounded-full bg-emerald-600 animate-ping" />
             )}
-          </button>
-
-          <button
-            onClick={() => setActiveTab('history')}
-            className={`px-4 py-2.5 rounded-xl font-bold text-xs sm:text-sm flex items-center gap-2 transition-all cursor-pointer ${
-              activeTab === 'history'
-                ? 'bg-emerald-600 text-white shadow-xs'
-                : 'bg-stone-50 text-stone-600 hover:bg-stone-100'
-            }`}
-          >
-            <PackageCheck className="w-4 h-4" />
-            <span>Completed History</span>
-            <span
-              className={`px-2 py-0.5 rounded-full text-xs font-black ${
-                activeTab === 'history' ? 'bg-emerald-700 text-white' : 'bg-stone-200 text-stone-700'
-              }`}
-            >
-              {completedCollections.length}
+          </div>
+          <span>Recent Notifications</span>
+          {unreadNotifCount > 0 ? (
+            <span className="px-2 py-0.5 rounded-full text-xs font-black bg-emerald-600 text-white">
+              {unreadNotifCount}
             </span>
-          </button>
-
-          <button
-            onClick={() => setActiveTab('settings')}
-            className={`px-4 py-2.5 rounded-xl font-bold text-xs sm:text-sm flex items-center gap-2 transition-all cursor-pointer ${
-              activeTab === 'settings'
-                ? 'bg-emerald-600 text-white shadow-xs'
-                : 'bg-stone-50 text-stone-600 hover:bg-stone-100'
-            }`}
-          >
-            <Sliders className="w-4 h-4" />
-            <span>Radius & Preferences</span>
-          </button>
-
-          {/* QR Code Scanner to scan Donor's display screen and trigger pickup */}
-          <button
-            onClick={() => setScannerOpen(true)}
-            className="ml-auto px-4 py-2.5 rounded-xl font-bold text-xs sm:text-sm flex items-center gap-2 bg-gradient-to-r from-emerald-700 to-teal-800 hover:from-emerald-800 hover:to-teal-900 text-white shadow-xs transition-all cursor-pointer"
-            title="Scan Donor Display Screen to Verify Pickup"
-          >
-            <Camera className="w-4 h-4" />
-            <span>Scan Donor Screen</span>
-          </button>
-
-          {/* Slide-over Recent Notifications Action Button */}
-          <button
-            onClick={() => setNotificationsOpen(true)}
-            className={`px-4 py-2.5 rounded-xl font-bold text-xs sm:text-sm flex items-center gap-2 transition-all cursor-pointer border ${
-              unreadNotifCount > 0
-                ? 'bg-emerald-50 text-emerald-900 border-emerald-300 hover:bg-emerald-100 shadow-xs'
-                : 'bg-white text-stone-700 border-stone-200 hover:bg-stone-50'
-            }`}
-            aria-label="Open Recent Notifications slide-over"
-          >
-            <div className="relative">
-              <Bell className={`w-4 h-4 ${unreadNotifCount > 0 ? 'text-emerald-700' : 'text-stone-500'}`} />
-              {unreadNotifCount > 0 && (
-                <span className="absolute -top-1 -right-1 w-2 h-2 rounded-full bg-emerald-600 animate-ping" />
-              )}
-            </div>
-            <span>Recent Notifications</span>
-            {unreadNotifCount > 0 ? (
-              <span className="px-2 py-0.5 rounded-full text-xs font-black bg-emerald-600 text-white">
-                {unreadNotifCount}
-              </span>
-            ) : (
-              <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-stone-100 text-stone-600">
-                0
-              </span>
-            )}
-          </button>
-        </div>
-      </div>
+          ) : (
+            <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-stone-100 text-stone-600">
+              0
+            </span>
+          )}
+        </button>
+      </VolunteerStatsHeader>
 
       {/* TAB 1: AVAILABLE COLLECTIONS */}
       {activeTab === 'available' && (
@@ -922,129 +837,14 @@ export const VolunteerView: React.FC<VolunteerViewProps> = ({
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
               {availableCollections.map((donation) => (
-                <div
+                <AvailableCollectionCard
                   key={donation.id}
-                  className="bg-white rounded-2xl border border-stone-200 hover:border-emerald-300 transition-all shadow-sm hover:shadow-md overflow-hidden flex flex-col justify-between"
-                >
-                  <div>
-                    {/* Image / Header */}
-                    <div className="relative h-44 bg-stone-100 overflow-hidden">
-                      {donation.imageUrl ? (
-                        <img
-                          src={donation.imageUrl}
-                          alt={donation.foodName}
-                          className="w-full h-full object-cover"
-                        />
-                      ) : (
-                        <div className="w-full h-full flex items-center justify-center text-stone-400 font-bold text-xs">
-                          Food Surplus Listing
-                        </div>
-                      )}
-                      {/* Urgency Badge & Distance */}
-                      {(() => {
-                        const timeInfo = getRemainingTimeInfo(donation);
-                        return (
-                          <div className="absolute top-3 left-3 flex flex-wrap gap-1.5">
-                            <span className="px-2.5 py-1 rounded-full text-[11px] font-black bg-stone-900/80 text-white backdrop-blur-xs flex items-center gap-1">
-                              <Compass className="w-3 h-3 text-emerald-400" />
-                              <span>{donation.distanceKm ? `${donation.distanceKm.toFixed(1)} km away` : '< 1 km'}</span>
-                            </span>
-                            <span
-                              className={`px-2.5 py-1 rounded-full text-[11px] font-black shadow-xs flex items-center gap-1 ${
-                                timeInfo.isUrgent
-                                  ? 'bg-rose-500 text-white animate-pulse'
-                                  : 'bg-amber-500 text-stone-950'
-                              }`}
-                            >
-                              <Clock className="w-3 h-3" />
-                              <span>{timeInfo.isUrgent ? `⚠️ Urgent: ${timeInfo.label}` : timeInfo.label}</span>
-                            </span>
-                          </div>
-                        );
-                      })()}
-                      <div className="absolute top-3 right-3">
-                        <span className="px-2.5 py-1 rounded-full text-[11px] font-black bg-emerald-600 text-white shadow-xs">
-                          {donation.category}
-                        </span>
-                      </div>
-                    </div>
-
-                    {/* Body */}
-                    <div className="p-5 space-y-3">
-                      <div>
-                        <h3 className="font-bold text-stone-900 text-base leading-snug line-clamp-1">
-                          {donation.foodName}
-                        </h3>
-                        <p className="text-xs text-stone-500 mt-1 line-clamp-2">
-                          {donation.description || 'Nutritious surplus ready for volunteer collection and shelter transport.'}
-                        </p>
-                      </div>
-
-                      {/* Scheduled Pickup Window */}
-                      <div className="bg-emerald-50/70 border border-emerald-100 rounded-xl p-2.5 text-xs text-emerald-950 flex items-start gap-2">
-                        <Calendar className="w-4 h-4 text-emerald-700 shrink-0 mt-0.5" />
-                        <div>
-                          <div className="font-bold text-[11px] uppercase tracking-wider text-emerald-800">
-                            Scheduled Pickup Window
-                          </div>
-                          <div className="font-semibold text-xs mt-0.5">
-                            {formatPickupWindow(donation)}
-                          </div>
-                          {donation.preferredPickupTime && (
-                            <div className="text-[11px] text-emerald-700 mt-0.5">
-                              Preferred time: <strong>{donation.preferredPickupTime}</strong>
-                            </div>
-                          )}
-                        </div>
-                      </div>
-
-                      <div className="space-y-1.5 pt-2 border-t border-stone-100 text-xs text-stone-600">
-                        <div className="flex items-center justify-between">
-                          <span className="text-stone-400">Quantity:</span>
-                          <span className="font-bold text-stone-800">
-                            {donation.quantity} {donation.unit} ({donation.servings || donation.quantity * 2} servings)
-                          </span>
-                        </div>
-                        <div className="flex items-center justify-between">
-                          <span className="text-stone-400">Donor:</span>
-                          <span className="font-semibold text-stone-800 truncate max-w-[180px]">
-                            {donation.donorName}
-                          </span>
-                        </div>
-                        <div className="flex items-center gap-1.5 text-stone-500 pt-1">
-                          <MapPin className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
-                          <span className="truncate">{donation.pickupAddress}</span>
-                        </div>
-                        {donation.storageType && (
-                          <div className="text-[11px] text-amber-800 bg-amber-50 px-2.5 py-1 rounded-lg">
-                            Storage: {donation.storageType}
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Accept CTA */}
-                  <div className="p-5 pt-0">
-                    <button
-                      onClick={() => handleAcceptRequest(donation)}
-                      disabled={claimingDonationId === donation.id}
-                      className="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs sm:text-sm py-3 rounded-xl transition-all shadow-xs flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50"
-                    >
-                      {claimingDonationId === donation.id ? (
-                        <>
-                          <Loader2 className="w-4 h-4 animate-spin" />
-                          <span>Reserving Collection...</span>
-                        </>
-                      ) : (
-                        <>
-                          <CheckCircle2 className="w-4 h-4" />
-                          <span>Accept Collection Request</span>
-                        </>
-                      )}
-                    </button>
-                  </div>
-                </div>
+                  donation={donation}
+                  claimingDonationId={claimingDonationId}
+                  onAccept={handleAcceptRequest}
+                  getRemainingTimeInfo={getRemainingTimeInfo}
+                  formatPickupWindow={formatPickupWindow}
+                />
               ))}
             </div>
           )}
@@ -1071,562 +871,85 @@ export const VolunteerView: React.FC<VolunteerViewProps> = ({
               </button>
             </div>
           ) : (
-            activeCollections.map((donation) => (
-              <div
-                key={donation.id}
-                className="bg-white rounded-3xl border border-emerald-200 shadow-md p-6 sm:p-8 space-y-6"
-              >
-                {/* Active Header & Stepper */}
-                <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 pb-6 border-b border-stone-100">
-                  <div>
-                    <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full text-xs font-bold bg-emerald-100 text-emerald-800 mb-2">
-                      <Radio className="w-3.5 h-3.5 text-emerald-600 animate-pulse" />
-                      <span>Collection Mission in Progress</span>
-                    </div>
-                    <h2 className="text-xl sm:text-2xl font-black text-stone-900">
-                      {donation.foodName}
-                    </h2>
-                    <p className="text-xs text-stone-500">
-                      {donation.quantity} {donation.unit} • Donor: {donation.donorName}
-                    </p>
-                  </div>
-
-                  {/* Actions / Pre-pickup cancellation */}
-                  <div className="flex items-center gap-3">
-                    {['accepted', 'scheduled'].includes(donation.status) && (
-                      <button
-                        onClick={() => setCancelModalDonation(donation)}
-                        className="px-4 py-2 rounded-xl border border-rose-200 hover:bg-rose-50 text-rose-700 text-xs font-bold transition-colors cursor-pointer"
-                      >
-                        Cancel Collection
-                      </button>
-                    )}
-                  </div>
-                </div>
-
-                {/* Visual Status Progression Stepper */}
-                <div className="py-2">
-                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-                    {[
-                      { status: 'accepted', label: '1. Request Accepted', icon: CheckCircle2 },
-                      { status: 'picked_up', label: '2. Food Picked Up', icon: PackageCheck },
-                      { status: 'in_transit', label: '3. In Transit to Shelter', icon: Bike },
-                      { status: 'delivered', label: '4. Delivered to Shelter', icon: Award },
-                    ].map((step, idx) => {
-                      const isPast =
-                        (step.status === 'accepted' && ['accepted', 'picked_up', 'in_transit', 'delivered', 'completed'].includes(donation.status)) ||
-                        (step.status === 'picked_up' && ['picked_up', 'in_transit', 'delivered', 'completed'].includes(donation.status)) ||
-                        (step.status === 'in_transit' && ['in_transit', 'delivered', 'completed'].includes(donation.status)) ||
-                        (step.status === 'delivered' && ['delivered', 'completed'].includes(donation.status));
-
-                      const isCurrent = donation.status === step.status;
-
-                      return (
-                        <div
-                          key={step.status}
-                          className={`p-3.5 rounded-2xl border transition-all ${
-                            isCurrent
-                              ? 'bg-emerald-50 border-emerald-400 shadow-xs'
-                              : isPast
-                              ? 'bg-stone-50 border-stone-200 text-emerald-800'
-                              : 'bg-stone-50/50 border-stone-200 opacity-50'
-                          }`}
-                        >
-                          <div className="flex items-center gap-2">
-                            <step.icon
-                              className={`w-4 h-4 ${
-                                isPast || isCurrent ? 'text-emerald-600' : 'text-stone-400'
-                              }`}
-                            />
-                            <span className="text-xs font-bold text-stone-900">{step.label}</span>
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-
-                {/* Transition Action Buttons */}
-                <div className="bg-stone-50 p-4 rounded-2xl border border-stone-200 flex flex-wrap items-center justify-between gap-4">
-                  <div className="text-xs text-stone-600">
-                    <span className="font-bold text-stone-900">Current Status:</span>{' '}
-                    <span className="uppercase text-emerald-700 font-bold">{donation.status.replace('_', ' ')}</span>
-                  </div>
-
-                  <div className="flex flex-wrap items-center gap-2">
-                    {['accepted', 'scheduled'].includes(donation.status) && (
-                      <>
-                        <button
-                          onClick={() => setScannerOpen(true)}
-                          className="bg-emerald-700 hover:bg-emerald-800 text-white font-bold text-xs px-4 py-2.5 rounded-xl shadow-xs transition-colors flex items-center gap-2 cursor-pointer"
-                          title="Scan Donor's Display Screen to verify pickup handover"
-                        >
-                          <QrCode className="w-4 h-4" />
-                          <span>Scan Donor Screen to Verify</span>
-                        </button>
-                        <button
-                          onClick={() => handleTransitionStatus(donation, 'picked_up')}
-                          disabled={statusUpdating}
-                          className="bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs px-4 py-2.5 rounded-xl shadow-xs transition-colors flex items-center gap-2 cursor-pointer disabled:opacity-50"
-                        >
-                          <PackageCheck className="w-4 h-4" />
-                          <span>Confirm Food Picked Up</span>
-                        </button>
-                      </>
-                    )}
-
-                    {donation.status === 'picked_up' && (
-                      <button
-                        onClick={() => handleTransitionStatus(donation, 'in_transit')}
-                        disabled={statusUpdating}
-                        className="bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs px-4 py-2.5 rounded-xl shadow-xs transition-colors flex items-center gap-2 cursor-pointer disabled:opacity-50"
-                      >
-                        <Bike className="w-4 h-4" />
-                        <span>Depart to Shelter (In Transit)</span>
-                      </button>
-                    )}
-
-                    {donation.status === 'in_transit' && (
-                      <button
-                        onClick={() => handleTransitionStatus(donation, 'delivered')}
-                        disabled={statusUpdating}
-                        className="bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs px-4 py-2.5 rounded-xl shadow-xs transition-colors flex items-center gap-2 cursor-pointer disabled:opacity-50"
-                      >
-                        <Award className="w-4 h-4" />
-                        <span>Confirm Delivery at Shelter</span>
-                      </button>
-                    )}
-
-                    {donation.status === 'delivered' && (
-                      <button
-                        onClick={() => handleTransitionStatus(donation, 'completed')}
-                        disabled={statusUpdating}
-                        className="bg-stone-900 hover:bg-stone-800 text-white font-bold text-xs px-4 py-2.5 rounded-xl shadow-xs transition-colors flex items-center gap-2 cursor-pointer disabled:opacity-50"
-                      >
-                        <CheckCircle2 className="w-4 h-4 text-emerald-400" />
-                        <span>Finalize Mission & Archive</span>
-                      </button>
-                    )}
-                  </div>
-                </div>
-
-                {/* Live GPS & Route Tracking Map */}
-                <div className="space-y-3">
-                  <div className="flex items-center justify-between">
-                    <h3 className="text-sm font-bold text-stone-900 flex items-center gap-2">
-                      <Radio className="w-4 h-4 text-emerald-600" />
-                      <span>Live Courier Navigation & Radar</span>
-                    </h3>
-                    <span className="text-xs text-stone-500">
-                      Donor and Shelter can view your pulse position in real time
-                    </span>
-                  </div>
-
-                  <LiveTrackingMap donation={donation} height="400px" allowBroadcast={true} />
-                </div>
-
-                {/* Pickup and Shelter Address Cards */}
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-xs">
-                  <div className="p-4 rounded-2xl bg-stone-50 border border-stone-200 space-y-2">
-                    <div className="font-bold text-emerald-800 flex items-center gap-1.5 uppercase tracking-wider text-[11px]">
-                      <MapPin className="w-3.5 h-3.5" />
-                      <span>Pickup: Donor Facility</span>
-                    </div>
-                    <div className="font-bold text-stone-900 text-sm">{donation.donorName}</div>
-                    <div className="text-stone-600">{donation.pickupAddress}</div>
-                    <div className="pt-2 flex items-center gap-3">
-                      <a
-                        href={`https://www.google.com/maps/dir/?api=1&destination=${donation.latitude || 28.6139},${donation.longitude || 77.209}`}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="text-emerald-700 font-bold flex items-center gap-1 hover:underline"
-                      >
-                        <span>Get Directions</span>
-                        <ExternalLink className="w-3 h-3" />
-                      </a>
-                    </div>
-                  </div>
-
-                  <div className="p-4 rounded-2xl bg-stone-50 border border-stone-200 space-y-2">
-                    <div className="font-bold text-blue-800 flex items-center gap-1.5 uppercase tracking-wider text-[11px]">
-                      <Building2 className="w-3.5 h-3.5" />
-                      <span>Dropoff: Recipient Shelter</span>
-                    </div>
-                    <div className="font-bold text-stone-900 text-sm">
-                      {donation.assignedNgoName || 'Verified Community Shelter'}
-                    </div>
-                    <div className="text-stone-600">
-                      {donation.dropoffAddress || 'Shelter Central Hub, Food Rescue Network'}
-                    </div>
-                    <div className="pt-2 flex items-center gap-3">
-                      <a
-                        href={`https://www.google.com/maps/dir/?api=1&destination=${donation.dropoffLatitude || 28.5729},${donation.dropoffLongitude || 77.2215}`}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="text-blue-700 font-bold flex items-center gap-1 hover:underline"
-                      >
-                        <span>Get Directions</span>
-                        <ExternalLink className="w-3 h-3" />
-                      </a>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            ))
+            <>
+              {activeCollections.map((donation) => (
+                <ActiveCollectionCard
+                  key={donation.id}
+                  donation={donation}
+                  statusUpdating={statusUpdating}
+                  onCancel={(d) => setCancelModalDonation(d)}
+                  onScanPickup={() => setScannerOpen(true)}
+                  onScanDelivery={(d) => setQrModal({ isOpen: true, mode: 'scan_delivery', donation: d })}
+                  onTransitionStatus={handleTransitionStatus}
+                />
+              ))}
+              {/* Active collections card: Scan Donor Screen to Verify */}
+            </>
           )}
         </div>
       )}
 
       {/* TAB 3: COMPLETED HISTORY */}
       {activeTab === 'history' && (
-        <div className="space-y-6">
-          <div className="bg-white rounded-3xl p-6 sm:p-8 border border-stone-200">
-            <h3 className="text-lg font-black text-stone-900 mb-4">Your Completed Food Rescue Runs</h3>
-
-            {completedCollections.length === 0 ? (
-              <div className="text-center py-12 text-stone-400 text-xs">
-                No past deliveries recorded yet. Once you complete your first collection run, your verified impact certificate will appear here!
-              </div>
-            ) : (
-              <div className="overflow-x-auto">
-                <table className="w-full text-left text-xs text-stone-700">
-                  <thead className="bg-stone-50 text-stone-500 font-bold uppercase tracking-wider border-b border-stone-200">
-                    <tr>
-                      <th className="py-3 px-4">Food Item</th>
-                      <th className="py-3 px-4">Quantity / Meals</th>
-                      <th className="py-3 px-4">Donor</th>
-                      <th className="py-3 px-4">Recipient Shelter</th>
-                      <th className="py-3 px-4">Completion Date</th>
-                      <th className="py-3 px-4">Status</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-stone-100">
-                    {completedCollections.map((donation) => (
-                      <tr key={donation.id} className="hover:bg-stone-50/60">
-                        <td className="py-3.5 px-4 font-bold text-stone-900">{donation.foodName}</td>
-                        <td className="py-3.5 px-4">
-                          {donation.quantity} {donation.unit} (~{donation.servings || donation.quantity * 2} meals)
-                        </td>
-                        <td className="py-3.5 px-4">{donation.donorName}</td>
-                        <td className="py-3.5 px-4">{donation.assignedNgoName || 'Community Shelter'}</td>
-                        <td className="py-3.5 px-4 text-stone-500">
-                          {donation.deliveredAt ? new Date(donation.deliveredAt).toLocaleDateString() : 'Recent'}
-                        </td>
-                        <td className="py-3.5 px-4">
-                          <span className="inline-flex items-center gap-1 text-emerald-700 font-bold bg-emerald-50 px-2 py-0.5 rounded-full">
-                            <CheckCircle2 className="w-3 h-3" />
-                            <span>Delivered</span>
-                          </span>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-          </div>
-        </div>
+        <VolunteerHistoryTab completedCollections={completedCollections} />
       )}
 
       {/* TAB 4: VOLUNTEER SETTINGS & RADIUS */}
       {activeTab === 'settings' && (
-        <div className="max-w-3xl mx-auto bg-white rounded-3xl p-6 sm:p-8 border border-stone-200 shadow-sm space-y-6">
-          <div>
-            <h3 className="text-xl font-black text-stone-900">Volunteer Logistics Preferences</h3>
-            <p className="text-xs text-stone-500">
-              Customize your operational radius, notification alerts, and transport vehicle.
-            </p>
-          </div>
-
-          <div className="space-y-6 pt-4 border-t border-stone-100">
-            {/* Availability Duty Switch */}
-            <div className="flex items-center justify-between p-4 rounded-2xl bg-stone-50 border border-stone-200">
-              <div>
-                <div className="font-bold text-sm text-stone-900">On-Duty Availability</div>
-                <div className="text-xs text-stone-500">
-                  When enabled, you appear on nearby donors' radars and receive collection requests.
-                </div>
-              </div>
-              <button
-                onClick={() => setIsAvailable(!isAvailable)}
-                className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-hidden ${
-                  isAvailable ? 'bg-emerald-600' : 'bg-stone-300'
-                }`}
-              >
-                <span
-                  className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow-sm ring-0 transition duration-200 ease-in-out ${
-                    isAvailable ? 'translate-x-5' : 'translate-x-0'
-                  }`}
-                />
-              </button>
-            </div>
-
-            {/* Notification Radius Slider */}
-            <div className="p-4 rounded-2xl bg-stone-50 border border-stone-200 space-y-3">
-              <div className="flex items-center justify-between">
-                <div>
-                  <div className="font-bold text-sm text-stone-900">Collection Notification Radius</div>
-                  <div className="text-xs text-stone-500">
-                    Only receive surplus food alerts within this radius from your base location.
-                  </div>
-                </div>
-                <div className="text-lg font-black text-emerald-700 bg-white px-3 py-1 rounded-xl border border-emerald-200">
-                  {radiusKm} km
-                </div>
-              </div>
-              <input
-                type="range"
-                min="1"
-                max="30"
-                step="1"
-                value={radiusKm}
-                onChange={(e) => setRadiusKm(Number(e.target.value))}
-                className="w-full accent-emerald-600 cursor-pointer"
-              />
-              <div className="flex justify-between text-[11px] text-stone-400 font-bold">
-                <span>1 km (Local neighborhood)</span>
-                <span>10 km (Recommended default)</span>
-                <span>30 km (Metropolitan)</span>
-              </div>
-            </div>
-
-            {/* Vehicle Type */}
-            <div className="p-4 rounded-2xl bg-stone-50 border border-stone-200 space-y-3">
-              <div className="font-bold text-sm text-stone-900">Transport Vehicle</div>
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
-                {[
-                  { type: 'Bicycle', icon: Bike },
-                  { type: 'Two Wheeler', icon: Bike },
-                  { type: 'Car', icon: Car },
-                  { type: 'Van / EV', icon: Truck },
-                ].map((v) => (
-                  <button
-                    key={v.type}
-                    onClick={() => setVehicleType(v.type)}
-                    className={`p-3 rounded-xl border text-xs font-bold flex flex-col items-center gap-1.5 transition-all cursor-pointer ${
-                      vehicleType === v.type
-                        ? 'bg-emerald-600 text-white border-emerald-600 shadow-xs'
-                        : 'bg-white text-stone-700 border-stone-200 hover:bg-stone-100'
-                    }`}
-                  >
-                    <v.icon className="w-5 h-5" />
-                    <span>{v.type}</span>
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            {/* Base Coordinates & Auto Detect */}
-            <div className="p-4 rounded-2xl bg-stone-50 border border-stone-200 space-y-3">
-              <div className="flex items-center justify-between">
-                <div>
-                  <div className="font-bold text-sm text-stone-900">Base Location Coordinates</div>
-                  <div className="text-xs text-stone-500">
-                    Used to calculate proximity to nearby donor pickups.
-                  </div>
-                </div>
-                <button
-                  onClick={handleDetectLocation}
-                  disabled={gpsDetecting}
-                  className="bg-white hover:bg-emerald-50 text-emerald-700 border border-emerald-200 px-3 py-1.5 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer disabled:opacity-50"
-                >
-                  {gpsDetecting ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Navigation className="w-3.5 h-3.5" />}
-                  <span>Auto-detect via GPS</span>
-                </button>
-              </div>
-
-              {volunteerCoords && (
-                <div className="text-xs text-stone-600 font-mono bg-white p-2.5 rounded-xl border border-stone-200">
-                  Lat: {volunteerCoords.lat.toFixed(4)}, Lng: {volunteerCoords.lng.toFixed(4)}
-                </div>
-              )}
-            </div>
-
-            {/* Notification Opt-in Switch */}
-            <div className="flex items-center justify-between p-4 rounded-2xl bg-stone-50 border border-stone-200">
-              <div>
-                <div className="font-bold text-sm text-stone-900">Receive In-App Food Rescue Alerts</div>
-                <div className="text-xs text-stone-500">
-                  Get instant real-time sound and banner alerts when donors post surplus food.
-                </div>
-              </div>
-              <button
-                onClick={() => setOptInNotifs(!optInNotifs)}
-                className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-hidden ${
-                  optInNotifs ? 'bg-emerald-600' : 'bg-stone-300'
-                }`}
-              >
-                <span
-                  className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow-sm ring-0 transition duration-200 ease-in-out ${
-                    optInNotifs ? 'translate-x-5' : 'translate-x-0'
-                  }`}
-                />
-              </button>
-            </div>
-
-            {/* DEDICATED SECTION: Firebase Cloud Messaging Browser Push Notifications */}
-            <div className="p-5 rounded-2xl bg-gradient-to-br from-emerald-50/70 to-teal-50/70 border border-emerald-200 space-y-4">
-              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                <div className="flex items-start gap-3">
-                  <div className="w-10 h-10 rounded-xl bg-emerald-600 text-white flex items-center justify-center shrink-0 shadow-xs">
-                    <BellRing className="w-5 h-5" />
-                  </div>
-                  <div>
-                    <div className="flex items-center gap-2">
-                      <h4 className="font-bold text-sm text-stone-900">Browser Push Notifications</h4>
-                      <span className="text-[10px] uppercase font-black px-2 py-0.5 rounded-full bg-emerald-700 text-white tracking-wider">
-                        FCM Web Push
-                      </span>
-                    </div>
-                    <p className="text-xs text-stone-600 mt-0.5">
-                      Receive immediate desktop and mobile lock-screen alerts whenever new donations are submitted within {radiusKm} km of your base.
-                    </p>
-                  </div>
-                </div>
-
-                <div className="shrink-0">
-                  {fcmEnabled && fcmPermission === 'granted' ? (
-                    <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold bg-emerald-100 text-emerald-800 border border-emerald-200">
-                      <Check className="w-3.5 h-3.5 text-emerald-600" />
-                      <span>Active & Subscribed</span>
-                    </span>
-                  ) : fcmPermission === 'denied' ? (
-                    <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold bg-rose-100 text-rose-800 border border-rose-200">
-                      <AlertCircle className="w-3.5 h-3.5 text-rose-600" />
-                      <span>Blocked in Browser</span>
-                    </span>
-                  ) : (
-                    <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold bg-stone-100 text-stone-600 border border-stone-200">
-                      <span>Not Enabled</span>
-                    </span>
-                  )}
-                </div>
-              </div>
-
-              {/* Action Buttons & Test Trigger */}
-              <div className="flex flex-wrap items-center gap-2.5 pt-2 border-t border-emerald-100">
-                <button
-                  onClick={handleTogglePushNotifications}
-                  disabled={fcmLoading}
-                  className={`px-4 py-2.5 rounded-xl font-bold text-xs transition-colors flex items-center gap-2 cursor-pointer disabled:opacity-50 ${
-                    fcmEnabled
-                      ? 'bg-stone-200 hover:bg-stone-300 text-stone-800'
-                      : 'bg-emerald-600 hover:bg-emerald-700 text-white shadow-xs'
-                  }`}
-                >
-                  {fcmLoading ? (
-                    <Loader2 className="w-4 h-4 animate-spin" />
-                  ) : (
-                    <Bell className="w-4 h-4" />
-                  )}
-                  <span>{fcmEnabled ? 'Pause Push Notifications' : 'Enable Browser Push Notifications'}</span>
-                </button>
-
-                <button
-                  onClick={handleTestPushNotification}
-                  disabled={testingFcm}
-                  className="bg-white hover:bg-stone-50 text-stone-700 border border-stone-200 px-4 py-2.5 rounded-xl font-bold text-xs transition-colors flex items-center gap-2 cursor-pointer disabled:opacity-50"
-                >
-                  {testingFcm ? (
-                    <Loader2 className="w-4 h-4 animate-spin" />
-                  ) : (
-                    <Send className="w-4 h-4 text-emerald-600" />
-                  )}
-                  <span>Send Test Push Alert</span>
-                </button>
-              </div>
-
-              {/* FCM Device Token & Status Diagnostics */}
-              <div className="pt-2 text-[11px] text-stone-500 space-y-1.5">
-                <div className="flex items-center justify-between">
-                  <span>Service Worker Handler:</span>
-                  <span className="font-mono text-emerald-800 font-semibold">/firebase-messaging-sw.js</span>
-                </div>
-                {fcmToken && (
-                  <div className="flex items-center justify-between bg-white/80 p-2 rounded-xl border border-emerald-100">
-                    <span className="truncate max-w-[280px] font-mono text-[10px] text-stone-600">
-                      FCM Token: {fcmToken.slice(0, 24)}...{fcmToken.slice(-12)}
-                    </span>
-                    <button
-                      onClick={handleCopyFcmToken}
-                      className="text-emerald-700 font-bold hover:text-emerald-850 flex items-center gap-1 cursor-pointer ml-2 shrink-0"
-                    >
-                      {copiedToken ? (
-                        <>
-                          <Check className="w-3.5 h-3.5 text-emerald-600" />
-                          <span>Copied</span>
-                        </>
-                      ) : (
-                        <>
-                          <Copy className="w-3.5 h-3.5" />
-                          <span>Copy Token</span>
-                        </>
-                      )}
-                    </button>
-                  </div>
-                )}
-              </div>
-            </div>
-
-            {/* Save Button */}
-            <button
-              onClick={handleSaveSettings}
-              disabled={savingSettings}
-              className="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-sm py-3.5 rounded-2xl shadow-sm transition-colors flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50"
-            >
-              {savingSettings ? <Loader2 className="w-4 h-4 animate-spin" /> : <CheckCircle2 className="w-4 h-4" />}
-              <span>Save Logistics Preferences</span>
-            </button>
-          </div>
-        </div>
+        <VolunteerSettingsTab
+          isAvailable={isAvailable}
+          setIsAvailable={setIsAvailable}
+          radiusKm={radiusKm}
+          setRadiusKm={setRadiusKm}
+          vehicleType={vehicleType}
+          setVehicleType={setVehicleType}
+          handleDetectLocation={handleDetectLocation}
+          gpsDetecting={gpsDetecting}
+          volunteerCoords={volunteerCoords}
+          optInNotifs={optInNotifs}
+          setOptInNotifs={setOptInNotifs}
+          fcmEnabled={fcmEnabled}
+          fcmPermission={fcmPermission}
+          fcmLoading={fcmLoading}
+          handleTogglePushNotifications={handleTogglePushNotifications}
+          testingFcm={testingFcm}
+          handleTestPushNotification={handleTestPushNotification}
+          fcmToken={fcmToken}
+          copiedToken={copiedToken}
+          handleCopyFcmToken={handleCopyFcmToken}
+          savingSettings={savingSettings}
+          handleSaveSettings={handleSaveSettings}
+          userProfile={userProfile}
+          handleActivateVolunteerRole={handleActivateVolunteerRole}
+        />
       )}
 
       {/* Cancellation Modal */}
-      {cancelModalDonation && (
-        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="bg-white rounded-3xl max-w-md w-full p-6 shadow-2xl border border-stone-200 space-y-4">
-            <div className="w-12 h-12 rounded-2xl bg-rose-100 text-rose-700 flex items-center justify-center">
-              <AlertTriangle className="w-6 h-6" />
-            </div>
-            <div>
-              <h3 className="text-lg font-bold text-stone-900">Cancel Collection Assignment?</h3>
-              <p className="text-xs text-stone-500 mt-1">
-                This will release <span className="font-bold text-stone-800">"{cancelModalDonation.foodName}"</span> back into the pool so other nearby volunteers can collect it before the deadline.
-              </p>
-            </div>
+      <VolunteerCancellationModal
+        donation={cancelModalDonation}
+        cancelReason={cancelReason}
+        setCancelReason={setCancelReason}
+        cancelling={cancelling}
+        onClose={() => setCancelModalDonation(null)}
+        onConfirm={handleConfirmCancel}
+      />
 
-            <div className="space-y-1.5 text-xs">
-              <label className="font-bold text-stone-700">Reason for release:</label>
-              <select
-                value={cancelReason}
-                onChange={(e) => setCancelReason(e.target.value)}
-                className="w-full p-2.5 rounded-xl border border-stone-300 bg-stone-50 text-stone-800 focus:outline-emerald-600 text-xs"
-              >
-                <option value="Change in schedule / Vehicle issue">Change in schedule / Vehicle issue</option>
-                <option value="Traffic delay / Too far to reach before deadline">Traffic delay / Too far to reach before deadline</option>
-                <option value="Donor location unreachable">Donor location unreachable</option>
-                <option value="Personal emergency">Personal emergency</option>
-              </select>
-            </div>
-
-            <div className="flex items-center justify-end gap-2.5 pt-2">
-              <button
-                onClick={() => setCancelModalDonation(null)}
-                className="px-4 py-2 rounded-xl border border-stone-300 text-stone-700 text-xs font-semibold hover:bg-stone-50 cursor-pointer"
-              >
-                Keep Assignment
-              </button>
-              <button
-                onClick={handleConfirmCancel}
-                disabled={cancelling}
-                className="px-4 py-2 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold transition-colors cursor-pointer flex items-center gap-1.5"
-              >
-                {cancelling ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : null}
-                <span>Release Assignment</span>
-              </button>
-            </div>
-          </div>
-        </div>
+      {/* Handover Delivery QR Verification Modal */}
+      {qrModal.isOpen && qrModal.donation && (
+        <QRVerificationModal
+          isOpen={qrModal.isOpen}
+          mode={qrModal.mode}
+          donation={qrModal.donation}
+          onClose={() => setQrModal({ isOpen: false, mode: 'scan_pickup', donation: null })}
+          onSuccess={() => {
+            setQrModal({ isOpen: false, mode: 'scan_pickup', donation: null });
+            setActionMessage({
+              type: 'success',
+              text: 'Delivery handover successfully verified! Food rescue completed.',
+            });
+            setActiveTab('history');
+          }}
+        />
       )}
 
       {/* Recent Notifications Slide-over Panel */}

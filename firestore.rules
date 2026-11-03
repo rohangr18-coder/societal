@@ -32,6 +32,12 @@ service cloud.firestore {
       );
     }
 
+    function hasRole(role) {
+      return isSignedIn() &&
+        exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == role;
+    }
+
     function isDonationDonor(donationId) {
       return isSignedIn() &&
         exists(/databases/$(database)/documents/donations/$(donationId)) &&
@@ -57,7 +63,7 @@ service cloud.firestore {
 
     // Admins collection
     match /admins/{adminId} {
-      allow read: if isSignedIn();
+      allow read: if isSignedIn() && (request.auth.uid == adminId || isAdmin());
       allow write: if isAdmin();
     }
 
@@ -154,7 +160,8 @@ service cloud.firestore {
          incoming().status in ['available', 'requested', 'accepted', 'cancelled'] &&
          isValidStatusTransition(existing().status, incoming().status)) ||
         // 2. NGO: claims available or requested donation; moves available/requested -> requested/accepted
-        (incoming().diff(existing()).affectedKeys().hasOnly([
+        (hasRole('ngo') &&
+         incoming().diff(existing()).affectedKeys().hasOnly([
           'status', 'assignedNgoId', 'assignedNgoName', 'updatedAt', 'pickupDeadline',
           'pickupDate', 'availableFrom', 'availableUntil', 'collectionDeadline', 'preferredPickupTime', 'timeZone',
           'claimLock', 'timeline', 'dropoffAddress', 'dropoffLatitude', 'dropoffLongitude'
@@ -163,17 +170,20 @@ service cloud.firestore {
          existing().status in ['available', 'requested'] &&
          incoming().status in ['requested', 'accepted'] &&
          isValidStatusTransition(existing().status, incoming().status)) ||
-        // 3. Volunteer: accepts task or advances delivery progress; moves accepted/scheduled -> picked_up -> in_transit -> delivered
-        (incoming().diff(existing()).affectedKeys().hasOnly([
+        // 3. Volunteer: accepts task, advances delivery progress, or releases assignment before pickup
+        ((hasRole('volunteer') || exists(/databases/$(database)/documents/volunteerProfiles/$(request.auth.uid))) &&
+         incoming().diff(existing()).affectedKeys().hasOnly([
           'status', 'assignedVolunteerId', 'assignedVolunteerName', 'assignedVolunteerPhone',
           'acceptedAt', 'pickedUpAt', 'deliveredAt', 'completedAt', 'claimLock',
           'pickupDeadline', 'pickupDate', 'availableFrom', 'availableUntil', 'collectionDeadline', 'timeZone',
           'dropoffAddress', 'dropoffLatitude', 'dropoffLongitude', 'updatedAt', 'timeline'
         ]) &&
-         incoming().assignedVolunteerId == request.auth.uid &&
-         existing().status in ['accepted', 'scheduled', 'picked_up', 'in_transit'] &&
-         incoming().status in ['scheduled', 'picked_up', 'in_transit', 'delivered'] &&
-         isValidStatusTransition(existing().status, incoming().status))
+         (incoming().assignedVolunteerId == request.auth.uid ||
+          (existing().assignedVolunteerId == request.auth.uid && (incoming().assignedVolunteerId == '' || incoming().assignedVolunteerId == null))) &&
+         (!('assignedVolunteerId' in existing()) || existing().assignedVolunteerId == null || existing().assignedVolunteerId == '' || existing().assignedVolunteerId == request.auth.uid) &&
+         existing().status in ['available', 'requested', 'accepted', 'scheduled', 'picked_up'] &&
+         incoming().status in ['available', 'requested', 'accepted', 'scheduled', 'in_transit', 'cancelled'] &&
+         (incoming().status == existing().status || isValidStatusTransition(existing().status, incoming().status)))
       );
 
       allow delete: if isAdmin() || (isSignedIn() && existing().donorId == request.auth.uid && existing().status == 'available');
@@ -239,11 +249,11 @@ service cloud.firestore {
         isAdmin()
       );
       allow create, update: if isSignedIn() && (
-        incoming().volunteerId == request.auth.uid ||
+        (incoming().volunteerId == request.auth.uid && isDonationVolunteer(donationId)) ||
         isAdmin()
       );
       allow delete: if isSignedIn() && (
-        existing().volunteerId == request.auth.uid ||
+        (existing().volunteerId == request.auth.uid && isDonationVolunteer(donationId)) ||
         isAdmin()
       );
     }

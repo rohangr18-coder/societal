@@ -27,6 +27,7 @@ async function main() {
     './scheduled_expiration_job_validation.ts',
     './firestore_undefined_sanitizer_validation.ts',
     './volunteer_qr_scanner_pickup_validation.ts',
+    './volunteer_acceptance_workflow_validation.ts',
   ];
 
   for (const file of testFiles) {

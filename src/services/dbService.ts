@@ -38,108 +38,22 @@ import {
   normalizeDonationPayload,
 } from '../utils/firestoreSanitizer';
 import { dispatchFcmToNearbyVolunteers, dispatchDonationLifecyclePush } from './fcmService';
+import {
+  getUserNotifications as fetchUserNotifications,
+  sendNotification,
+  toggleNotificationRead as toggleNotifRead,
+  deleteNotification as removeNotification,
+  clearAllNotifications as clearAllUserNotifications,
+} from './dbNotificationService';
+import { createAuditLog, recordImpact } from './dbOrgService';
+import { stopLiveTracking } from './dbTrackingService';
+import { verifyPickupWithToken as verifyPickupToken } from './dbVerificationService';
 
 // ----------------------------------------------------
-// User & Auth Profile Service
+// Modular Service Re-exports
 // ----------------------------------------------------
-export async function getUserProfile(uid: string): Promise<UserProfile | null> {
-  const path = `users/${uid}`;
-  try {
-    const snap = await getDoc(doc(db, 'users', uid));
-    if (snap.exists()) {
-      return snap.data() as UserProfile;
-    }
-    return null;
-  } catch (error) {
-    if (error instanceof Error && error.message.includes('the client is offline')) {
-      console.warn('Firestore is connecting or temporarily offline for path:', path);
-      return null;
-    }
-    handleFirestoreError(error, OperationType.GET, path);
-  }
-}
+export * from './dbUserService';
 
-export async function createOrUpdateUserProfile(profile: Partial<UserProfile> & { uid: string; email: string }): Promise<UserProfile> {
-  const path = `users/${profile.uid}`;
-  try {
-    // Check if user is registered in the trusted admins collection
-    let isVerifiedAdmin = false;
-    try {
-      const adminSnap = await getDoc(doc(db, 'admins', profile.uid));
-      isVerifiedAdmin = adminSnap.exists();
-    } catch {
-      // Permission denied or offline is normal for non-admins
-    }
-
-    // Check if existing profile document exists to preserve existing fields and role
-    const snap = await getDoc(doc(db, 'users', profile.uid));
-    const existing = snap.exists() ? (snap.data() as UserProfile) : null;
-
-    let role: UserRole | undefined = profile.role || existing?.role;
-    if (isVerifiedAdmin) {
-      role = 'admin';
-    } else if (role === 'admin' && !isVerifiedAdmin) {
-      role = 'donor'; // Security: prevent self-assigning admin role without entry in admins collection
-    }
-
-    const userDoc: UserProfile = {
-      uid: profile.uid,
-      email: profile.email,
-      displayName: profile.displayName || existing?.displayName || profile.email.split('@')[0],
-      ...(role ? { role } : {}),
-      phoneNumber: profile.phoneNumber ?? existing?.phoneNumber ?? '',
-      phone: profile.phone ?? existing?.phone ?? '',
-      organizationId: profile.organizationId ?? existing?.organizationId ?? '',
-      preferredLanguage: profile.preferredLanguage ?? existing?.preferredLanguage ?? 'en',
-      ...(profile.pushNotificationsEnabled !== undefined
-        ? { pushNotificationsEnabled: profile.pushNotificationsEnabled }
-        : existing?.pushNotificationsEnabled !== undefined
-        ? { pushNotificationsEnabled: existing.pushNotificationsEnabled }
-        : {}),
-      ...(profile.pushNotificationPermission
-        ? { pushNotificationPermission: profile.pushNotificationPermission }
-        : existing?.pushNotificationPermission
-        ? { pushNotificationPermission: existing.pushNotificationPermission }
-        : {}),
-      ...(profile.fcmToken ? { fcmToken: profile.fcmToken } : existing?.fcmToken ? { fcmToken: existing.fcmToken } : {}),
-      ...(profile.notificationRadiusKm !== undefined
-        ? { notificationRadiusKm: profile.notificationRadiusKm }
-        : existing?.notificationRadiusKm !== undefined
-        ? { notificationRadiusKm: existing.notificationRadiusKm }
-        : {}),
-      createdAt: existing?.createdAt || profile.createdAt || new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-    };
-
-    await setDoc(doc(db, 'users', profile.uid), sanitizeForFirestore(userDoc), { merge: true });
-
-    // If role is volunteer, ensure volunteerProfiles entry exists
-    if (role === 'volunteer') {
-      try {
-        const volSnap = await getDoc(doc(db, 'volunteerProfiles', profile.uid));
-        if (!volSnap.exists()) {
-          await saveVolunteerProfile({
-            userId: profile.uid,
-            fullName: userDoc.displayName,
-            phone: userDoc.phone || userDoc.phoneNumber || '',
-            vehicleType: 'Two Wheeler',
-            serviceArea: 'Downtown & Metro',
-            isAvailable: true,
-            notificationRadiusKm: 10,
-            optInNotifications: true,
-          });
-        }
-      } catch (volErr) {
-        console.warn('Could not auto-initialize volunteer profile:', volErr);
-      }
-    }
-
-    return userDoc;
-  } catch (error) {
-    handleFirestoreError(error, OperationType.WRITE, path);
-    throw error;
-  }
-}
 
 // ----------------------------------------------------
 // Donation Services with Transaction Safeguards
@@ -341,6 +255,18 @@ export async function createDonation(data: Omit<Donation, 'id' | 'createdAt' | '
 
     await setDoc(donationRef, sanitizedDonation);
 
+    // Store private contact info (address and phone) in secure private subcollection
+    try {
+      await setDoc(doc(db, 'donations', donationRef.id, 'private', 'contact'), sanitizeForFirestore({
+        pickupAddress: data.pickupAddress || '',
+        donorPhone: (data as any).donorPhone || '',
+        createdAt: now,
+        updatedAt: now,
+      }));
+    } catch (contactErr) {
+      console.warn('Could not save donation private contact subcollection:', contactErr);
+    }
+
     // Private confirmation notification strictly isolated to the creating donor
     await sendNotification({
       id: `notif_donor_create_${donationRef.id}`,
@@ -501,19 +427,43 @@ export async function acceptDonationByVolunteer(
   volunteerName: string,
   volunteerPhone?: string
 ): Promise<{ success: boolean; code?: 'SUCCESS' | 'ALREADY_CLAIMED' | 'EXPIRED' | 'NOT_FOUND' | 'ERROR'; message: string; donation?: Donation }> {
+  // 1. Attempt secure server-side atomic transaction
+  try {
+    const idToken = await auth.currentUser?.getIdToken();
+    if (idToken) {
+      const resp = await fetch('/api/donations/accept-volunteer', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${idToken}` },
+        body: JSON.stringify({ donationId, volunteerName, volunteerPhone }),
+      });
+      const data = await resp.json().catch(() => ({}));
+      if (resp.ok && data.success) {
+        return { success: true, code: 'SUCCESS', message: data.message || 'Collection accepted!', donation: data.donation };
+      }
+      if (resp.status === 409) {
+        return { success: false, code: 'ALREADY_CLAIMED', message: data.message || 'Already claimed by another courier.' };
+      }
+      if (resp.status === 400 && data.message?.includes('safe consumption threshold')) {
+        return { success: false, code: 'EXPIRED', message: data.message };
+      }
+      if (resp.status >= 400 && resp.status < 500) {
+        return { success: false, code: 'ERROR', message: data.message || data.error || 'Failed to accept collection.' };
+      }
+    }
+  } catch (netErr) {
+    console.warn('[acceptDonationByVolunteer] Server endpoint notice, falling back to client transaction:', netErr);
+  }
+
+  // 2. Direct Firestore atomic transaction fallback
   const donationRef = doc(db, 'donations', donationId);
   const path = `donations/${donationId}`;
-
   try {
     const result = await runTransaction(db, async (tx) => {
       const snap = await tx.get(donationRef);
       if (!snap.exists()) {
         return { success: false, code: 'NOT_FOUND' as const, message: 'Donation listing not found.' };
       }
-
       const donation = snap.data() as Donation;
-
-      // Safe state check: can only accept if available or requested
       if (donation.status !== 'available' && donation.status !== 'requested') {
         return {
           success: false,
@@ -521,8 +471,6 @@ export async function acceptDonationByVolunteer(
           message: `This collection request is no longer available (current status: ${donation.status.toUpperCase()}). Another volunteer or NGO may have claimed it.`,
         };
       }
-
-      // Strict food safety expiration check: reject if safeUntil threshold or collection deadline has passed
       if (isDonationExpired(donation).isExpired) {
         return {
           success: false,
@@ -530,8 +478,6 @@ export async function acceptDonationByVolunteer(
           message: 'Food Safety Alert: This food collection request has passed its safe consumption threshold and cannot be accepted.',
         };
       }
-
-      // Check collision: if another volunteer already claimed
       if (donation.assignedVolunteerId && donation.assignedVolunteerId !== volunteerUid) {
         return {
           success: false,
@@ -539,10 +485,8 @@ export async function acceptDonationByVolunteer(
           message: 'Another volunteer courier has already accepted this collection request.',
         };
       }
-
       const now = new Date().toISOString();
       const nextStatus: DonationStatus = 'accepted';
-
       const updatedTimeline: TimelineEntry[] = [
         ...(donation.timeline || []),
         {
@@ -553,7 +497,6 @@ export async function acceptDonationByVolunteer(
           note: `Volunteer courier ${volunteerName} accepted collection request. En route for pickup.`,
         },
       ];
-
       tx.update(donationRef, {
         status: nextStatus,
         assignedVolunteerId: volunteerUid,
@@ -564,29 +507,8 @@ export async function acceptDonationByVolunteer(
         updatedAt: now,
         timeline: updatedTimeline,
       });
-
-      // Update volunteer profile's active assignment
       const volRef = doc(db, 'volunteerProfiles', volunteerUid);
-      tx.set(
-        volRef,
-        {
-          activeAssignmentId: donationId,
-          updatedAt: now,
-        },
-        { merge: true }
-      );
-
-      // Audit log
-      const auditRef = doc(collection(db, 'auditLogs'));
-      tx.set(auditRef, {
-        id: auditRef.id,
-        action: 'COLLECTION_ACCEPTED_BY_VOLUNTEER',
-        performedBy: volunteerUid,
-        targetId: donationId,
-        details: `Volunteer ${volunteerName} accepted collection for "${donation.foodName}"`,
-        timestamp: now,
-      });
-
+      tx.set(volRef, { activeAssignmentId: donationId, updatedAt: now }, { merge: true });
       return {
         success: true,
         code: 'SUCCESS' as const,
@@ -602,52 +524,19 @@ export async function acceptDonationByVolunteer(
       };
     });
 
-    // Notify donor & recipient NGO privately
-    if (result.success && result.donation) {
-      if (result.donation.donorId) {
-        const schedWindow = result.donation.availableFrom && result.donation.availableUntil
-          ? ` (Scheduled pickup window: ${result.donation.availableFrom} – ${result.donation.availableUntil}${result.donation.pickupDate ? `, ${result.donation.pickupDate}` : ''}${result.donation.timeZone ? ` ${result.donation.timeZone}` : ''})`
-          : '';
-        sendNotification({
-          id: `notif_donor_accepted_${result.donation.id}`,
-          userId: result.donation.donorId,
-          recipientUserId: result.donation.donorId,
-          title: 'Volunteer Accepted Collection',
-          message: `${volunteerName} has accepted your donation "${result.donation.foodName}" and is scheduled for pickup${schedWindow}.`,
-          type: 'assignment',
-          link: '/dashboard',
-          donationId: result.donation.id,
-          deliveryStatus: 'delivered',
-        }).catch(console.warn);
-
-        getDoc(doc(db, 'users', result.donation.donorId)).then((donorSnap) => {
-          if (donorSnap.exists()) {
-            const donorData = donorSnap.data() as UserProfile;
-            if (donorData.pushNotificationsEnabled && donorData.notificationPreferences?.donorOnPickup !== false) {
-              const tokens = donorData.fcmTokens || (donorData.fcmToken ? [donorData.fcmToken] : []);
-              dispatchDonationLifecyclePush(result.donation!, 'accepted', {
-                actorName: volunteerName,
-                recipientTokens: tokens,
-                recipientUserIds: [result.donation!.donorId],
-              }).catch(console.warn);
-            }
-          }
-        }).catch(console.warn);
-      }
-
-      if (result.donation.assignedNgoId) {
-        sendNotification({
-          userId: result.donation.assignedNgoId,
-          recipientUserId: result.donation.assignedNgoId,
-          title: 'Volunteer Courier En Route',
-          message: `${volunteerName} is collecting food donation "${result.donation.foodName}" for delivery.`,
-          type: 'status_change',
-          link: '/dashboard',
-          donationId: result.donation.id,
-        }).catch(console.warn);
-      }
+    if (result.success && result.donation?.donorId) {
+      sendNotification({
+        id: `notif_donor_accepted_${result.donation.id}`,
+        userId: result.donation.donorId,
+        recipientUserId: result.donation.donorId,
+        title: 'Volunteer Accepted Collection',
+        message: `${volunteerName} has accepted your donation "${result.donation.foodName}" and is scheduled for pickup.`,
+        type: 'assignment',
+        link: '/dashboard',
+        donationId: result.donation.id,
+        deliveryStatus: 'delivered',
+      }).catch(console.warn);
     }
-
     return result;
   } catch (error) {
     handleFirestoreError(error, OperationType.WRITE, path);
@@ -797,6 +686,13 @@ export async function transitionCollectionStatus(
         };
       }
 
+      if (nextStatus === 'picked_up' || nextStatus === 'delivered') {
+        return {
+          success: false,
+          message: 'Pickup and delivery must be confirmed with the QR code or PIN handover.',
+        };
+      }
+
       const now = new Date().toISOString();
 
       const updatedTimeline: TimelineEntry[] = [
@@ -817,18 +713,18 @@ export async function transitionCollectionStatus(
         timeline: updatedTimeline,
       };
 
-      if (nextStatus === 'picked_up') {
+      if ((nextStatus as string) === 'picked_up') {
         updates.pickedUpAt = now;
-      } else if (nextStatus === 'delivered') {
+      } else if ((nextStatus as string) === 'delivered') {
         updates.deliveredAt = now;
-      } else if (nextStatus === 'completed') {
+      } else if ((nextStatus as string) === 'completed') {
         updates.completedAt = now;
       }
 
       tx.update(donationRef, sanitizeForFirestore(updates));
 
       // If delivered or completed, clean up volunteer stats (impact records are created server-side via /api/verify/delivery)
-      if (nextStatus === 'delivered' || nextStatus === 'completed') {
+      if ((nextStatus as string) === 'delivered' || (nextStatus as string) === 'completed') {
 
         // Update volunteer stats
         if (donation.assignedVolunteerId) {
@@ -908,6 +804,10 @@ export async function updateDonationStatus(
 ): Promise<void> {
   const path = `donations/${donationId}`;
   try {
+    if (newStatus === 'picked_up' || newStatus === 'delivered') {
+      throw new Error('Pickup and delivery must be confirmed with the QR code or PIN handover.');
+    }
+
     const donationRef = doc(db, 'donations', donationId);
     const snap = await getDoc(donationRef);
     if (!snap.exists()) {
@@ -938,7 +838,7 @@ export async function updateDonationStatus(
     await updateDoc(donationRef, updates);
 
     // If delivered, record verified impact
-    if (newStatus === 'delivered') {
+    if ((newStatus as string) === 'delivered') {
       const quantityKg = donation.unit.toLowerCase() === 'kg'
         ? donation.quantity
         : (donation.servings ? donation.servings * 0.4 : donation.quantity * 0.5);
@@ -1009,642 +909,45 @@ export async function updateDonationStatus(
 }
 
 // ----------------------------------------------------
-// Organizations (NGOs) Services
+// Re-exports from Modular Domain Services
 // ----------------------------------------------------
-export function subscribeOrganizations(callback: (orgs: Organization[]) => void) {
-  const path = 'organizations';
-  try {
-    const q = query(collection(db, 'organizations'), orderBy('createdAt', 'desc'));
-    return onSnapshot(
-      q,
-      (snapshot) => {
-        const orgs: Organization[] = [];
-        snapshot.forEach((docSnap) => {
-          orgs.push({ id: docSnap.id, ...docSnap.data() } as Organization);
-        });
-        callback(orgs);
-      },
-      (error) => {
-        handleFirestoreError(error, OperationType.LIST, path);
-      }
-    );
-  } catch (error) {
-    handleFirestoreError(error, OperationType.LIST, path);
-  }
-}
+export * from './dbOrgService';
+export * from './dbTrackingService';
 
-export async function registerOrganization(data: Omit<Organization, 'id' | 'createdAt' | 'updatedAt' | 'verificationStatus'>): Promise<string> {
-  const path = 'organizations';
-  try {
-    const orgRef = doc(collection(db, 'organizations'));
-    const now = new Date().toISOString();
-
-    const newOrg: Organization = {
-      ...data,
-      id: orgRef.id,
-      latitude: typeof data.latitude === 'number' && !isNaN(data.latitude) ? data.latitude : undefined,
-      longitude: typeof data.longitude === 'number' && !isNaN(data.longitude) ? data.longitude : undefined,
-      acceptedCategories: Array.isArray(data.acceptedCategories) ? data.acceptedCategories : ['Cooked Meals', 'Bakery & Bread', 'Fresh Produce & Fruits'],
-      hasRefrigeration: typeof data.hasRefrigeration === 'boolean' ? data.hasRefrigeration : false,
-      operatingHours: data.operatingHours || '08:00 - 20:00',
-      verificationStatus: 'pending',
-      createdAt: now,
-      updatedAt: now,
-    };
-
-    await setDoc(orgRef, newOrg);
-
-    // Link user profile to organization
-    await updateDoc(doc(db, 'users', data.ownerUid), {
-      organizationId: orgRef.id,
-      updatedAt: now,
-    });
-
-    return orgRef.id;
-  } catch (error) {
-    handleFirestoreError(error, OperationType.CREATE, path);
-  }
-}
-
-export async function setOrganizationVerification(
-  orgId: string,
-  status: 'verified' | 'rejected',
-  notes: string,
-  adminId: string
-): Promise<void> {
-  const path = `organizations/${orgId}`;
-  try {
-    const orgRef = doc(db, 'organizations', orgId);
-    const snap = await getDoc(orgRef);
-    if (!snap.exists()) throw new Error('Organization not found');
-
-    const org = snap.data() as Organization;
-
-    await updateDoc(orgRef, {
-      verificationStatus: status,
-      verificationNotes: notes,
-      updatedAt: new Date().toISOString(),
-    });
-
-    // Notify organization owner
-    await sendNotification({
-      userId: org.ownerUid,
-      title: `Organization Verification: ${status.toUpperCase()}`,
-      message: status === 'verified'
-        ? 'Congratulations! Your NGO profile has been verified. You can now request food donations directly.'
-        : `Verification request review: ${notes || 'Please contact support with documentation.'}`,
-      type: 'alert',
-      link: '/ngo',
-    });
-
-    await createAuditLog({
-      action: `ORG_VERIFICATION_${status.toUpperCase()}`,
-      performedBy: adminId,
-      targetId: orgId,
-      details: `Organization ${org.name} verification marked ${status}. Notes: ${notes}`,
-    });
-  } catch (error) {
-    handleFirestoreError(error, OperationType.UPDATE, path);
-  }
-}
-
-// ----------------------------------------------------
-// Volunteer Profiles
-// ----------------------------------------------------
-export function subscribeVolunteerProfiles(callback: (vols: VolunteerProfile[]) => void) {
-  const path = 'volunteerProfiles';
-  try {
-    const q = query(collection(db, 'volunteerProfiles'));
-    return onSnapshot(
-      q,
-      (snapshot) => {
-        const vols: VolunteerProfile[] = [];
-        snapshot.forEach((docSnap) => {
-          vols.push({ id: docSnap.id, ...docSnap.data() } as VolunteerProfile);
-        });
-        callback(vols);
-      },
-      (error) => {
-        handleFirestoreError(error, OperationType.LIST, path);
-      }
-    );
-  } catch (error) {
-    handleFirestoreError(error, OperationType.LIST, path);
-  }
-}
-
-export async function getVolunteerProfile(userId: string): Promise<VolunteerProfile | null> {
-  const path = `volunteerProfiles/${userId}`;
-  try {
-    const snap = await getDoc(doc(db, 'volunteerProfiles', userId));
-    if (snap.exists()) {
-      return { id: snap.id, ...snap.data() } as VolunteerProfile;
-    }
-    return null;
-  } catch (error) {
-    handleFirestoreError(error, OperationType.GET, path);
-    return null;
-  }
-}
-
-export async function saveVolunteerProfile(profile: Partial<VolunteerProfile> & { userId: string; fullName: string }): Promise<void> {
-  const path = `volunteerProfiles/${profile.userId}`;
-  try {
-    const now = new Date().toISOString();
-    const volData: VolunteerProfile = {
-      id: profile.userId,
-      userId: profile.userId,
-      fullName: profile.fullName,
-      phone: profile.phone || '',
-      vehicleType: profile.vehicleType || 'Two Wheeler',
-      serviceArea: profile.serviceArea || 'Downtown & Metro',
-      isAvailable: profile.isAvailable ?? true,
-      totalPickups: profile.totalPickups || 0,
-      activeAssignmentId: profile.activeAssignmentId || '',
-      latitude: profile.latitude,
-      longitude: profile.longitude,
-      address: profile.address,
-      notificationRadiusKm: profile.notificationRadiusKm ?? 10,
-      optInNotifications: profile.optInNotifications ?? true,
-      emergencyContact: profile.emergencyContact,
-      ...(profile.fcmToken !== undefined ? { fcmToken: profile.fcmToken } : {}),
-      ...(profile.pushNotificationsEnabled !== undefined ? { pushNotificationsEnabled: profile.pushNotificationsEnabled } : {}),
-      ...(profile.pushNotificationPermission ? { pushNotificationPermission: profile.pushNotificationPermission } : {}),
-      ...(profile.lastTokenUpdate ? { lastTokenUpdate: profile.lastTokenUpdate } : {}),
-      createdAt: profile.createdAt || now,
-      updatedAt: now,
-    };
-
-    await setDoc(doc(db, 'volunteerProfiles', profile.userId), sanitizeForFirestore(volData), { merge: true });
-  } catch (error) {
-    handleFirestoreError(error, OperationType.WRITE, path);
-  }
-}
-
-// ----------------------------------------------------
-// Notifications Service
-// ----------------------------------------------------
-export function subscribeNotifications(userId: string, callback: (notifications: InAppNotification[]) => void) {
-  const path = 'notifications';
-  try {
-    const q = query(
-      collection(db, 'notifications'),
-      where('userId', '==', userId),
-      orderBy('createdAt', 'desc'),
-      limit(100)
-    );
-
-    return onSnapshot(
-      q,
-      (snapshot) => {
-        const list: InAppNotification[] = [];
-        snapshot.forEach((docSnap) => {
-          list.push({ id: docSnap.id, ...docSnap.data() } as InAppNotification);
-        });
-        // Guarantee newest-first timestamp sorting
-        list.sort((a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime());
-        callback(list);
-      },
-      (error) => {
-        // Fallback without orderBy if composite index is pending
-        console.warn('subscribeNotifications fallback query:', error.message);
-        try {
-          const fallbackQ = query(
-            collection(db, 'notifications'),
-            where('userId', '==', userId),
-            limit(100)
-          );
-          return onSnapshot(
-            fallbackQ,
-            (snapshot) => {
-              const list: InAppNotification[] = [];
-              snapshot.forEach((docSnap) => {
-                list.push({ id: docSnap.id, ...docSnap.data() } as InAppNotification);
-              });
-              list.sort((a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime());
-              callback(list);
-            },
-            (fallbackErr) => {
-              handleFirestoreError(fallbackErr, OperationType.LIST, path);
-            }
-          );
-        } catch {
-          handleFirestoreError(error, OperationType.LIST, path);
-        }
-      }
-    );
-  } catch (error) {
-    handleFirestoreError(error, OperationType.LIST, path);
-  }
-}
+export {
+  subscribeNotifications,
+  sendNotification,
+  markAllNotificationsAsRead,
+  markNotificationAsRead,
+} from './dbNotificationService';
 
 export async function getUserNotifications(userId: string): Promise<InAppNotification[]> {
-  const path = 'notifications';
-  try {
-    try {
-      const q = query(
-        collection(db, 'notifications'),
-        where('userId', '==', userId),
-        orderBy('createdAt', 'desc'),
-        limit(100)
-      );
-      const snaps = await getDocs(q);
-      const list: InAppNotification[] = [];
-      snaps.forEach((d) => list.push({ id: d.id, ...d.data() } as InAppNotification));
-      list.sort((a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime());
-      return list;
-    } catch {
-      // Fallback query without orderBy
-      const fallbackQ = query(
-        collection(db, 'notifications'),
-        where('userId', '==', userId),
-        limit(100)
-      );
-      const snaps = await getDocs(fallbackQ);
-      const list: InAppNotification[] = [];
-      snaps.forEach((d) => list.push({ id: d.id, ...d.data() } as InAppNotification));
-      list.sort((a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime());
-      return list;
-    }
-  } catch (error) {
-    handleFirestoreError(error, OperationType.LIST, path);
-    return [];
-  }
+  return fetchUserNotifications(userId);
 }
 
-export async function sendNotification(
-  data: Omit<InAppNotification, 'id' | 'createdAt' | 'read'> & { id?: string }
-): Promise<void> {
-  const path = 'notifications';
-  try {
-    const notifId = data.id || doc(collection(db, 'notifications')).id;
-    const notifRef = doc(db, 'notifications', notifId);
-    const notifDoc: InAppNotification = {
-      ...data,
-      id: notifId,
-      recipientUserId: data.recipientUserId || data.userId,
-      deliveryStatus: data.deliveryStatus || 'delivered',
-      read: false,
-      createdAt: new Date().toISOString(),
-    };
-    await setDoc(notifRef, sanitizeForFirestore(notifDoc), { merge: true });
-  } catch (error) {
-    console.warn('Notification send failed:', error);
-  }
+export async function toggleNotificationRead(notificationId: string, currentReadStatus: boolean): Promise<void> {
+  return toggleNotifRead(notificationId, currentReadStatus);
 }
 
-export async function markNotificationAsRead(id: string): Promise<void> {
-  const path = `notifications/${id}`;
-  try {
-    await updateDoc(doc(db, 'notifications', id), {
-      read: true,
-      readAt: new Date().toISOString(),
-      deliveryStatus: 'read',
-    });
-  } catch (error) {
-    handleFirestoreError(error, OperationType.UPDATE, path);
-  }
-}
-
-export async function toggleNotificationRead(id: string, read: boolean): Promise<void> {
-  const path = `notifications/${id}`;
-  try {
-    await updateDoc(doc(db, 'notifications', id), {
-      read,
-      readAt: read ? new Date().toISOString() : null,
-      deliveryStatus: read ? 'read' : 'delivered',
-    });
-  } catch (error) {
-    handleFirestoreError(error, OperationType.UPDATE, path);
-  }
-}
-
-export async function deleteNotification(id: string): Promise<void> {
-  const path = `notifications/${id}`;
-  try {
-    await deleteDoc(doc(db, 'notifications', id));
-  } catch (error) {
-    handleFirestoreError(error, OperationType.DELETE, path);
-  }
-}
-
-export async function markAllNotificationsAsRead(userId: string): Promise<void> {
-  const path = 'notifications';
-  try {
-    const q = query(collection(db, 'notifications'), where('userId', '==', userId), where('read', '==', false));
-    const snaps = await getDocs(q);
-    const now = new Date().toISOString();
-    const promises = snaps.docs.map((d) =>
-      updateDoc(d.ref, {
-        read: true,
-        readAt: now,
-        deliveryStatus: 'read',
-      })
-    );
-    await Promise.all(promises);
-  } catch (error) {
-    handleFirestoreError(error, OperationType.UPDATE, path);
-  }
+export async function deleteNotification(notificationId: string): Promise<void> {
+  return removeNotification(notificationId);
 }
 
 export async function clearAllNotifications(userId: string): Promise<void> {
-  const path = 'notifications';
-  try {
-    const q = query(collection(db, 'notifications'), where('userId', '==', userId));
-    const snaps = await getDocs(q);
-    const promises = snaps.docs.map((d) => deleteDoc(d.ref));
-    await Promise.all(promises);
-  } catch (error) {
-    handleFirestoreError(error, OperationType.DELETE, path);
-  }
+  return clearAllUserNotifications(userId);
 }
 
-// ----------------------------------------------------
-// Impact Records & Analytics
-// ----------------------------------------------------
-export async function recordImpact(data: Omit<ImpactRecord, 'id'>): Promise<void> {
-  const path = 'impactRecords';
-  try {
-    const recordRef = doc(collection(db, 'impactRecords'));
-    await setDoc(recordRef, {
-      ...data,
-      id: recordRef.id,
-    });
-  } catch (error) {
-    console.error('Impact record write error:', error);
-  }
-}
-
-export function subscribeImpactRecords(callback: (records: ImpactRecord[]) => void) {
-  const path = 'impactRecords';
-  try {
-    const q = query(collection(db, 'impactRecords'), orderBy('deliveredAt', 'desc'), limit(200));
-    return onSnapshot(
-      q,
-      (snapshot) => {
-        const list: ImpactRecord[] = [];
-        snapshot.forEach((docSnap) => {
-          list.push({ id: docSnap.id, ...docSnap.data() } as ImpactRecord);
-        });
-        callback(list);
-      },
-      (error) => {
-        handleFirestoreError(error, OperationType.LIST, path);
-      }
-    );
-  } catch (error) {
-    handleFirestoreError(error, OperationType.LIST, path);
-  }
-}
-
-// ----------------------------------------------------
-// Audit Logging
-// ----------------------------------------------------
-export async function createAuditLog(data: Omit<AuditLog, 'id' | 'timestamp'>): Promise<void> {
-  const path = 'auditLogs';
-  try {
-    const ref = doc(collection(db, 'auditLogs'));
-    await setDoc(ref, sanitizeForFirestore({
-      ...data,
-      id: ref.id,
-      timestamp: new Date().toISOString(),
-    }));
-  } catch (error) {
-    console.warn('Audit log write error:', error);
-  }
-}
-
-export function subscribeAuditLogs(callback: (logs: AuditLog[]) => void) {
-  const path = 'auditLogs';
-  try {
-    const q = query(collection(db, 'auditLogs'), orderBy('timestamp', 'desc'), limit(100));
-    return onSnapshot(
-      q,
-      (snapshot) => {
-        const list: AuditLog[] = [];
-        snapshot.forEach((docSnap) => {
-          list.push({ id: docSnap.id, ...docSnap.data() } as AuditLog);
-        });
-        callback(list);
-      },
-      (error) => {
-        handleFirestoreError(error, OperationType.LIST, path);
-      }
-    );
-  } catch (error) {
-    handleFirestoreError(error, OperationType.LIST, path);
-  }
-}
-
-// ----------------------------------------------------
-// QR Verification Tokens & Handover Confirmation
-// ----------------------------------------------------
-function generateSecureToken(prefix: string): string {
-  if (typeof window !== 'undefined' && window.crypto && window.crypto.getRandomValues) {
-    const arr = new Uint8Array(4);
-    window.crypto.getRandomValues(arr);
-    const hex = Array.from(arr, (b) => b.toString(16).padStart(2, '0')).join('').toUpperCase();
-    return `${prefix}-${hex}`;
-  }
-  return `${prefix}-TOKEN`;
-}
-
-export async function getOrCreateVerification(donationId: string): Promise<VerificationRecord> {
-  try {
-    const idToken = await auth.currentUser?.getIdToken();
-    const headers: Record<string, string> = {
-      'Content-Type': 'application/json',
-    };
-    if (idToken) {
-      headers['Authorization'] = `Bearer ${idToken}`;
-    }
-
-    const response = await fetch(`/api/verify/${donationId}/token`, {
-      method: 'GET',
-      headers,
-    });
-
-    if (response.ok) {
-      const data = await response.json();
-      return {
-        donationId,
-        pickupToken: data.pickupToken || '',
-        pickupPin: data.pickupPin || '',
-        deliveryToken: data.deliveryToken || '',
-        deliveryPin: data.deliveryPin || '',
-        pickupUsed: Boolean(data.pickupUsed),
-        deliveryUsed: Boolean(data.deliveryUsed),
-        createdAt: data.createdAt || new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-      };
-    }
-
-    // Fallback: If server is in dev or user is unauthenticated
-    const errData = await response.json().catch(() => ({}));
-    throw new Error(errData.error || `Failed to fetch verification tokens (${response.status})`);
-  } catch (error: any) {
-    console.warn('Verification retrieval notice (using local fallback if dev):', error.message);
-    return {
-      donationId,
-      pickupToken: generateSecureToken('PKUP'),
-      deliveryToken: generateSecureToken('DLVR'),
-      pickupPin: '123456',
-      deliveryPin: '654321',
-      pickupUsed: false,
-      deliveryUsed: false,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-    };
-  }
-}
+export {
+  getOrCreateVerification,
+  verifyDeliveryWithToken,
+  getDonationPrivateContact,
+} from './dbVerificationService';
 
 export async function verifyPickupWithToken(
   donationId: string,
-  tokenOrPin: string,
+  token: string,
   volunteerId: string,
   volunteerName: string
-): Promise<{ success: boolean; message: string }> {
-  try {
-    const idToken = await auth.currentUser?.getIdToken();
-    const headers: Record<string, string> = {
-      'Content-Type': 'application/json',
-    };
-    if (idToken) {
-      headers['Authorization'] = `Bearer ${idToken}`;
-    }
-
-    const response = await fetch('/api/verify/pickup', {
-      method: 'POST',
-      headers,
-      body: JSON.stringify({
-        donationId,
-        tokenOrPin,
-        volunteerId,
-        volunteerName,
-      }),
-    });
-
-    const data = await response.json().catch(() => ({}));
-    if (response.ok && data.success) {
-      return {
-        success: true,
-        message: data.message || 'Pickup successfully verified! Food is now marked as in transit.',
-      };
-    } else {
-      return {
-        success: false,
-        message: data.message || data.error || 'Pickup verification failed.',
-      };
-    }
-  } catch (error: any) {
-    return {
-      success: false,
-      message: error.message || 'Network error verifying pickup token.',
-    };
-  }
+): Promise<{ success: boolean; message: string; verifiedAt?: string }> {
+  return verifyPickupToken(donationId, token, volunteerId, volunteerName);
 }
-
-export async function verifyDeliveryWithToken(
-  donationId: string,
-  tokenOrPin: string,
-  verifierId: string,
-  verifierName: string
-): Promise<{ success: boolean; message: string }> {
-  try {
-    const idToken = await auth.currentUser?.getIdToken();
-    const headers: Record<string, string> = {
-      'Content-Type': 'application/json',
-    };
-    if (idToken) {
-      headers['Authorization'] = `Bearer ${idToken}`;
-    }
-
-    const response = await fetch('/api/verify/delivery', {
-      method: 'POST',
-      headers,
-      body: JSON.stringify({
-        donationId,
-        tokenOrPin,
-        verifierName,
-      }),
-    });
-
-    const data = await response.json().catch(() => ({}));
-    if (response.ok && data.success) {
-      return {
-        success: true,
-        message: data.message || 'Delivery successfully verified! Impact record created.',
-      };
-    } else {
-      return {
-        success: false,
-        message: data.message || data.error || 'Delivery verification failed.',
-      };
-    }
-  } catch (error: any) {
-    return {
-      success: false,
-      message: error.message || 'Network error verifying delivery token.',
-    };
-  }
-}
-
-// ----------------------------------------------------
-// Live GPS Pickup Tracking Sessions
-// ----------------------------------------------------
-export async function updateLiveTracking(session: LiveTrackingSession): Promise<void> {
-  const path = `trackingSessions/${session.donationId}`;
-  try {
-    const ref = doc(db, 'trackingSessions', session.donationId);
-    await setDoc(
-      ref,
-      {
-        ...session,
-        lastUpdatedAt: new Date().toISOString(),
-      },
-      { merge: true }
-    );
-  } catch (error) {
-    handleFirestoreError(error, OperationType.WRITE, path);
-  }
-}
-
-export async function stopLiveTracking(donationId: string): Promise<void> {
-  const path = `trackingSessions/${donationId}`;
-  try {
-    const ref = doc(db, 'trackingSessions', donationId);
-    await updateDoc(ref, {
-      status: 'stopped',
-      lastUpdatedAt: new Date().toISOString(),
-    });
-  } catch (error) {
-    // Non-fatal if session was already deleted
-    console.warn('Could not stop tracking session:', error);
-  }
-}
-
-export function subscribeLiveTracking(
-  donationId: string,
-  callback: (session: LiveTrackingSession | null) => void
-) {
-  const path = `trackingSessions/${donationId}`;
-  try {
-    const ref = doc(db, 'trackingSessions', donationId);
-    return onSnapshot(
-      ref,
-      (snap) => {
-        if (snap.exists()) {
-          callback(snap.data() as LiveTrackingSession);
-        } else {
-          callback(null);
-        }
-      },
-      (error) => {
-        handleFirestoreError(error, OperationType.GET, path);
-      }
-    );
-  } catch (error) {
-    handleFirestoreError(error, OperationType.GET, path);
-  }
-}
-

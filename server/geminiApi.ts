@@ -3,6 +3,9 @@ import dotenv from 'dotenv';
 
 dotenv.config();
 
+export const DEFAULT_GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-3.8-flash';
+export const FALLBACK_GEMINI_MODEL = 'gemini-3.1-flash-lite';
+
 function getGenAI(): GoogleGenAI | null {
   const apiKey =
     process.env.GEMINI_API_KEY ||
@@ -407,13 +410,36 @@ export async function handleMithraChat(params: {
   }
 
   try {
-    const userRole = params.userContext?.role || 'Guest';
-    const org = params.userContext?.organizationName ? ` (${params.userContext.organizationName})` : '';
-    const city = params.userContext?.locationCity || 'Nearby';
-    const activeCount = params.platformSummary?.activeDonationsCount ?? 0;
-    const rescuedMeals = params.platformSummary?.totalMealsRescued ?? 0;
-    const pendingDeliveries = params.platformSummary?.pendingDeliveriesCount ?? 0;
-    const foodTypes = (params.platformSummary?.recentFoodTypes || []).slice(0, 5).join(', ') || 'Cooked meals, groceries, bakery items';
+    // Validate and sanitize userContext (strings <= 100 chars)
+    const rawContext = params.userContext || {};
+    const sanitizedContext = {
+      userId: typeof rawContext.userId === 'string' ? rawContext.userId.slice(0, 100) : undefined,
+      role: typeof rawContext.role === 'string' ? rawContext.role.slice(0, 100) : 'Guest',
+      organizationName: typeof rawContext.organizationName === 'string' ? rawContext.organizationName.slice(0, 100) : '',
+      locationCity: typeof rawContext.locationCity === 'string' ? rawContext.locationCity.slice(0, 100) : 'Nearby',
+    };
+
+    // Validate and sanitize platformSummary (numbers)
+    const rawSummary = params.platformSummary || {};
+    const sanitizedSummary = {
+      activeDonationsCount: Math.max(0, Number(rawSummary.activeDonationsCount) || 0),
+      totalMealsRescued: Math.max(0, Number(rawSummary.totalMealsRescued) || 0),
+      pendingDeliveriesCount: Math.max(0, Number(rawSummary.pendingDeliveriesCount) || 0),
+      recentFoodTypes: Array.isArray(rawSummary.recentFoodTypes)
+        ? rawSummary.recentFoodTypes
+            .filter((t): t is string => typeof t === 'string')
+            .map((t) => t.slice(0, 50))
+            .slice(0, 10)
+        : [],
+    };
+
+    const userRole = sanitizedContext.role;
+    const org = sanitizedContext.organizationName ? ` (${sanitizedContext.organizationName})` : '';
+    const city = sanitizedContext.locationCity;
+    const activeCount = sanitizedSummary.activeDonationsCount;
+    const rescuedMeals = sanitizedSummary.totalMealsRescued;
+    const pendingDeliveries = sanitizedSummary.pendingDeliveriesCount;
+    const foodTypes = sanitizedSummary.recentFoodTypes.slice(0, 5).join(', ') || 'Cooked meals, groceries, bakery items';
 
     const langMap: Record<string, string> = {
       en: 'English',
@@ -462,14 +488,16 @@ Format:
 - Use Markdown formatting (bold keywords, bullets) for scannability.
 - Never output fabricated real-time data that contradicts the platform numbers above.`;
 
+    // Validate and sanitize history (role user/model, text <= 1000 chars)
     const contents: any[] = [];
     if (params.history && Array.isArray(params.history)) {
       const recentHistory = params.history.slice(-8);
       for (const h of recentHistory) {
-        if (h && h.parts && h.parts[0]?.text) {
+        if (h && (h.role === 'user' || h.role === 'model') && Array.isArray(h.parts) && h.parts[0]?.text) {
+          const text = String(h.parts[0].text).slice(0, 1000);
           contents.push({
-            role: h.role === 'model' ? 'model' : 'user',
-            parts: [{ text: h.parts[0].text }],
+            role: h.role,
+            parts: [{ text }],
           });
         }
       }
@@ -487,7 +515,7 @@ Format:
     const callGemini = async () => {
       try {
         return await ai.models.generateContent({
-          model: 'gemini-3.8-flash',
+          model: DEFAULT_GEMINI_MODEL,
           contents,
           config: {
             systemInstruction,
@@ -497,7 +525,7 @@ Format:
         });
       } catch (primaryErr) {
         return await ai.models.generateContent({
-          model: 'gemini-3.1-flash-lite',
+          model: FALLBACK_GEMINI_MODEL,
           contents,
           config: {
             systemInstruction,
