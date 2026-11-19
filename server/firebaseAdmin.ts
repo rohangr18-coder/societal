@@ -163,5 +163,5 @@ export function adminDb(): Firestore {
   if (databaseId && databaseId !== '(default)') {
     return getFirestore(app, databaseId);
   }
-  return getFirestore(app, DEFAULT_APPLET_DATABASE_ID);
+  return getFirestore(app);
 }

@@ -22,6 +22,10 @@ import {
   getExpirationJobStatus,
 } from './expirationJob.js';
 import { handleAcceptVolunteerDonation } from './donationActions.js';
+import {
+  handleDonationImageUploadSignature,
+  isCloudinaryConfigured,
+} from './cloudinaryUpload.js';
 import { isDonationExpired } from '../src/utils/foodSafety.js';
 
 export const app = express();
@@ -138,6 +142,15 @@ export const verificationLimiter = createRateLimiter({
   standardHeaders: true,
   legacyHeaders: false,
   message: { error: 'Too many verification attempts from this IP. Please wait 15 minutes.' },
+});
+
+// 5. Rate limiter for signed image upload requests
+export const uploadLimiter = createRateLimiter({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 30,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many image upload requests. Please wait a few minutes before uploading again.' },
 });
 
 // ----------------------------------------------------
@@ -272,6 +285,7 @@ apiRouter.get('/health', (req: Request, res: Response) => {
     service: 'Food Rescue Network Backend',
     timestamp: new Date().toISOString(),
     geminiConfigured: hasGeminiKey,
+    cloudinaryConfigured: isCloudinaryConfigured(),
   });
 });
 
@@ -1522,6 +1536,10 @@ apiRouter.post('/verify/delivery', requireAuth, verificationLimiter, async (req:
 // Atomic volunteer acceptance transaction with audit logging & collision prevention
 apiRouter.post('/donations/accept-volunteer', requireAuth, verificationLimiter, handleAcceptVolunteerDonation);
 apiRouter.post('/donations/accept', requireAuth, verificationLimiter, handleAcceptVolunteerDonation);
+
+// POST /api/uploads/donation-image
+// Authenticated endpoint that validates image upload metadata and returns signed Cloudinary upload parameters
+apiRouter.post('/uploads/donation-image', requireAuth, uploadLimiter, handleDonationImageUploadSignature);
 
 // JSON 404 handler for unknown /api/* routes (never return HTML)
 apiRouter.use((_req: Request, res: Response) => {

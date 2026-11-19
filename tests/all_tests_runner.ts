@@ -30,6 +30,7 @@ async function main() {
     './volunteer_acceptance_workflow_validation.ts',
     './complete_audit_and_auth_validation.ts',
     './otp_verification_validation.ts',
+    './cloudinary_upload_validation.ts',
   ];
 
   for (const file of testFiles) {

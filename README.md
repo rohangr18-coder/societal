@@ -142,16 +142,19 @@ Configure the following environment variables in **Vercel Project Settings → E
 
 | Variable | Scope | Notes |
 |---|---|---|
+| `CLOUDINARY_CLOUD_NAME` | Server-only | Cloudinary cloud name used by `POST /api/uploads/donation-image` to generate signed upload URLs. |
+| `CLOUDINARY_API_KEY` | Server-only | Cloudinary API key paired with server-side upload signing. |
+| `CLOUDINARY_API_SECRET` | Server-only | **Secret** Cloudinary API secret used exclusively on the server to sign uploads. Never prefix with `VITE_` or expose to the browser. |
 | `GEMINI_API_KEY` | Server-only | Required for Mithra AI & Gemini matching/category endpoints (graceful deterministic fallback if absent). |
 | `CRON_SECRET` | Server-only | Random secret string used to authorize `GET /api/jobs/expire-donations`. Optional in local dev / AI Studio (falls back to authenticated admin access). |
 | `FIREBASE_SERVICE_ACCOUNT_JSON` | Server-only | Full Firebase Admin service account JSON **pasted on a single line**. Optional in AI Studio / GCP (falls back to Application Default Credentials / projectId). |
 | `VITE_FIREBASE_API_KEY` | Client (Vite) | Firebase Web App API key. |
 | `VITE_FIREBASE_AUTH_DOMAIN` | Client (Vite) | Firebase Auth domain (`<project-id>.firebaseapp.com`). |
 | `VITE_FIREBASE_PROJECT_ID` | Client (Vite) | Firebase project ID. |
-| `VITE_FIREBASE_STORAGE_BUCKET` | Client (Vite) | Firebase storage bucket. |
+| `VITE_FIREBASE_STORAGE_BUCKET` | Client (Vite) | Optional Firebase storage bucket (not required when using Cloudinary for image uploads). |
 | `VITE_FIREBASE_MESSAGING_SENDER_ID` | Client (Vite) | Firebase Cloud Messaging sender ID. |
 | `VITE_FIREBASE_APP_ID` | Client (Vite) | Firebase Web App ID. |
-| `VITE_FIREBASE_FIRESTORE_DATABASE_ID` | Client (Vite) | Dedicated Firestore named database ID. |
+| `VITE_FIREBASE_FIRESTORE_DATABASE_ID` | Client (Vite) | Firestore database ID (use `(default)` for standard Cloud Firestore databases). |
 | `VITE_FIREBASE_VAPID_KEY` | Client (Vite) | Optional Web Push VAPID key for FCM notifications. |
 | `VITE_GOOGLE_MAPS_API_KEY` | Client (Vite) | Restricted Google Maps Platform key (Maps JS, Places, Geocoding, Routes). |
 

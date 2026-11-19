@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useRef, useEffect } from 'react';
 import {
   X,
   Sparkles,
@@ -14,9 +14,17 @@ import {
   Navigation,
   Calendar,
   Globe,
+  Upload,
+  Image as ImageIcon,
+  Trash2,
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { createDonation } from '../services/dbService';
+import {
+  ALLOWED_DONATION_IMAGE_ACCEPT,
+  uploadDonationImageToCloudinary,
+  validateDonationImageFile,
+} from '../services/cloudinaryUploadService';
 import { GoogleRescueMap } from './GoogleRescueMap';
 import { computeSafeUntil } from '../utils/foodSafety';
 import { formatUserFriendlyFirestoreError } from '../utils/firestoreSanitizer';
@@ -94,6 +102,13 @@ export const CreateDonationModal: React.FC<CreateDonationModalProps> = ({ isOpen
 
   const [allergens, setAllergens] = useState('');
   const [imageUrl, setImageUrl] = useState('');
+  const [imagePreviewUrl, setImagePreviewUrl] = useState<string | null>(null);
+  const [uploadedFileName, setUploadedFileName] = useState<string | null>(null);
+  const [uploadingImage, setUploadingImage] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState(0);
+  const [imageUploadError, setImageUploadError] = useState<string | null>(null);
+  const [showManualUrlInput, setShowManualUrlInput] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   const [showMapPicker, setShowMapPicker] = useState(false);
   const [submitting, setSubmitting] = useState(false);
@@ -102,7 +117,68 @@ export const CreateDonationModal: React.FC<CreateDonationModalProps> = ({ isOpen
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
 
+  // Clean up local object URLs on change or unmount
+  useEffect(() => {
+    return () => {
+      if (imagePreviewUrl && imagePreviewUrl.startsWith('blob:')) {
+        URL.revokeObjectURL(imagePreviewUrl);
+      }
+    };
+  }, [imagePreviewUrl]);
+
   if (!isOpen) return null;
+
+  const handleImageFileSelect = async (file: File | null | undefined) => {
+    setImageUploadError(null);
+    if (!file) return;
+
+    const validation = validateDonationImageFile(file);
+    if (!validation.valid) {
+      setImageUploadError(validation.error || 'Invalid image file.');
+      if (fileInputRef.current) {
+        fileInputRef.current.value = '';
+      }
+      return;
+    }
+
+    const previewBlobUrl = URL.createObjectURL(file);
+    setImagePreviewUrl(previewBlobUrl);
+    setUploadedFileName(file.name);
+    setUploadingImage(true);
+    setUploadProgress(5);
+
+    try {
+      const result = await uploadDonationImageToCloudinary(file, (pct) => {
+        setUploadProgress(pct);
+      });
+      setImageUrl(result.imageUrl);
+      setImagePreviewUrl(result.imageUrl);
+      setImageUploadError(null);
+    } catch (uploadErr: any) {
+      console.error('[CreateDonationModal] Cloudinary upload error:', uploadErr);
+      setImageUrl('');
+      setImagePreviewUrl(null);
+      setUploadedFileName(null);
+      setUploadProgress(0);
+      setImageUploadError(uploadErr?.message || 'Failed to upload image. Please try again.');
+    } finally {
+      setUploadingImage(false);
+      if (fileInputRef.current) {
+        fileInputRef.current.value = '';
+      }
+    }
+  };
+
+  const handleRemoveImage = () => {
+    setImageUrl('');
+    setImagePreviewUrl(null);
+    setUploadedFileName(null);
+    setUploadProgress(0);
+    setImageUploadError(null);
+    if (fileInputRef.current) {
+      fileInputRef.current.value = '';
+    }
+  };
 
   // AI Category & Storage Suggestion using server-side Gemini API
   const handleAiSuggest = async () => {
@@ -195,6 +271,11 @@ export const CreateDonationModal: React.FC<CreateDonationModalProps> = ({ isOpen
 
     if (!currentUser) {
       setError('You must be signed in to create a donation.');
+      return;
+    }
+
+    if (uploadingImage) {
+      setError('Please wait for the food photo upload to finish before publishing.');
       return;
     }
 
@@ -685,8 +766,8 @@ export const CreateDonationModal: React.FC<CreateDonationModalProps> = ({ isOpen
             </div>
           </div>
 
-          {/* Allergens & Image URL */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          {/* Allergens & Food Photo Upload (Cloudinary) */}
+          <div className="space-y-4">
             <div>
               <label className="font-semibold text-stone-800 block mb-1 flex items-center gap-1.5">
                 <ShieldAlert className="w-4 h-4 text-red-500" />
@@ -702,14 +783,152 @@ export const CreateDonationModal: React.FC<CreateDonationModalProps> = ({ isOpen
             </div>
 
             <div>
-              <label className="font-semibold text-stone-800 block mb-1">Food Image URL (Optional)</label>
+              <div className="flex items-center justify-between mb-1.5">
+                <label className="font-semibold text-stone-800 flex items-center gap-1.5">
+                  <ImageIcon className="w-4 h-4 text-emerald-600" />
+                  Food Photo (Optional)
+                </label>
+                <button
+                  type="button"
+                  onClick={() => setShowManualUrlInput((prev) => !prev)}
+                  className="text-[11px] font-semibold text-stone-500 hover:text-emerald-700 transition-colors cursor-pointer"
+                >
+                  {showManualUrlInput ? 'Hide URL input' : 'Or paste image URL'}
+                </button>
+              </div>
+
               <input
-                type="url"
-                placeholder="https://..."
-                value={imageUrl}
-                onChange={(e) => setImageUrl(e.target.value)}
-                className="w-full px-3 py-2 rounded-xl border border-stone-200 focus:border-emerald-500 outline-hidden"
+                ref={fileInputRef}
+                type="file"
+                accept={ALLOWED_DONATION_IMAGE_ACCEPT}
+                disabled={uploadingImage}
+                onChange={(e) => handleImageFileSelect(e.target.files?.[0])}
+                className="hidden"
+                data-testid="donation-image-file-input"
               />
+
+              {imagePreviewUrl || imageUrl ? (
+                <div className="p-3 rounded-2xl border border-stone-200 bg-stone-50/70 flex flex-col sm:flex-row items-start sm:items-center gap-3">
+                  <img
+                    src={imagePreviewUrl || imageUrl}
+                    alt="Food donation preview"
+                    className="w-24 h-20 object-cover rounded-xl border border-stone-200 bg-white shrink-0"
+                  />
+                  <div className="flex-1 min-w-0 space-y-1.5 w-full">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-xs font-semibold text-stone-800 truncate">
+                        {uploadedFileName || 'Donation photo ready'}
+                      </span>
+                      {!uploadingImage && imageUrl && (
+                        <span className="text-[11px] font-semibold text-emerald-700 flex items-center gap-1 shrink-0">
+                          <CheckCircle2 className="w-3.5 h-3.5" />
+                          Uploaded
+                        </span>
+                      )}
+                    </div>
+
+                    {uploadingImage && (
+                      <div className="space-y-1">
+                        <div className="flex items-center justify-between text-[11px] text-emerald-800 font-medium">
+                          <span className="flex items-center gap-1.5">
+                            <Loader2 className="w-3 h-3 animate-spin" />
+                            Uploading photo securely...
+                          </span>
+                          <span>{uploadProgress}%</span>
+                        </div>
+                        <div className="w-full h-1.5 bg-stone-200 rounded-full overflow-hidden">
+                          <div
+                            className="h-full bg-emerald-600 transition-all duration-200"
+                            style={{ width: `${uploadProgress}%` }}
+                          />
+                        </div>
+                      </div>
+                    )}
+
+                    {!uploadingImage && (
+                      <div className="flex items-center gap-2 pt-0.5">
+                        <button
+                          type="button"
+                          onClick={() => fileInputRef.current?.click()}
+                          className="text-xs font-semibold text-emerald-700 hover:text-emerald-800 bg-emerald-50 hover:bg-emerald-100 px-2.5 py-1 rounded-lg transition-colors cursor-pointer"
+                        >
+                          Replace Photo
+                        </button>
+                        <button
+                          type="button"
+                          onClick={handleRemoveImage}
+                          className="text-xs font-semibold text-red-600 hover:text-red-700 bg-red-50 hover:bg-red-100 px-2.5 py-1 rounded-lg flex items-center gap-1 transition-colors cursor-pointer"
+                        >
+                          <Trash2 className="w-3 h-3" />
+                          Remove
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              ) : (
+                <div
+                  onDragOver={(e) => e.preventDefault()}
+                  onDrop={(e) => {
+                    e.preventDefault();
+                    if (!uploadingImage) {
+                      handleImageFileSelect(e.dataTransfer.files?.[0]);
+                    }
+                  }}
+                  onClick={() => !uploadingImage && fileInputRef.current?.click()}
+                  role="button"
+                  tabIndex={0}
+                  onKeyDown={(e) => {
+                    if ((e.key === 'Enter' || e.key === ' ') && !uploadingImage) {
+                      e.preventDefault();
+                      fileInputRef.current?.click();
+                    }
+                  }}
+                  className="p-4 rounded-2xl border-2 border-dashed border-stone-200 hover:border-emerald-400 hover:bg-emerald-50/30 transition-colors cursor-pointer flex flex-col sm:flex-row items-center justify-between gap-3"
+                >
+                  <div className="flex items-center gap-3">
+                    <div className="w-10 h-10 rounded-xl bg-emerald-50 text-emerald-700 flex items-center justify-center shrink-0">
+                      <Upload className="w-5 h-5" />
+                    </div>
+                    <div>
+                      <p className="text-xs font-semibold text-stone-800">
+                        Click to upload or drag & drop a photo of the surplus food
+                      </p>
+                      <p className="text-[11px] text-stone-500">
+                        JPEG, PNG, or WebP • Max 5 MB • Hosted securely via Cloudinary
+                      </p>
+                    </div>
+                  </div>
+                  <span className="text-xs font-semibold text-emerald-700 bg-emerald-100/80 px-3 py-1.5 rounded-xl shrink-0">
+                    Choose Photo
+                  </span>
+                </div>
+              )}
+
+              {imageUploadError && (
+                <div className="mt-2 p-2.5 bg-red-50 border border-red-200 rounded-xl text-red-700 text-xs flex items-start gap-2">
+                  <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+                  <span>{imageUploadError}</span>
+                </div>
+              )}
+
+              {showManualUrlInput && (
+                <div className="mt-2">
+                  <input
+                    type="url"
+                    placeholder="https://res.cloudinary.com/..."
+                    value={imageUrl}
+                    onChange={(e) => {
+                      const val = e.target.value;
+                      setImageUrl(val);
+                      setImagePreviewUrl(val.trim() || null);
+                      setUploadedFileName(null);
+                      setImageUploadError(null);
+                    }}
+                    className="w-full px-3 py-2 rounded-xl border border-stone-200 focus:border-emerald-500 outline-hidden text-xs"
+                  />
+                </div>
+              )}
             </div>
           </div>
 
@@ -790,13 +1009,18 @@ export const CreateDonationModal: React.FC<CreateDonationModalProps> = ({ isOpen
             </button>
             <button
               type="submit"
-              disabled={submitting}
+              disabled={submitting || uploadingImage}
               className="bg-emerald-600 hover:bg-emerald-700 text-white font-semibold px-6 py-2.5 rounded-xl shadow-xs transition-colors flex items-center gap-2 cursor-pointer disabled:opacity-50"
             >
               {submitting ? (
                 <>
                   <Loader2 className="w-4 h-4 animate-spin" />
                   Listing Donation...
+                </>
+              ) : uploadingImage ? (
+                <>
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                  Uploading Photo ({uploadProgress}%)...
                 </>
               ) : (
                 'Publish Food Donation'
