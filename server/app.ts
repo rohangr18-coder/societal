@@ -3,7 +3,12 @@ import crypto from 'crypto';
 import rateLimit from 'express-rate-limit';
 import { getAuth } from 'firebase-admin/auth';
 import { getMessaging } from 'firebase-admin/messaging';
-import { getAdminApp, adminDb } from './firebaseAdmin.js';
+import {
+  getAdminApp,
+  adminDb,
+  isCredentialOrPermissionError,
+  SERVER_NOT_CONFIGURED_RESPONSE,
+} from './firebaseAdmin.js';
 import {
   handleCategorySuggestion,
   handleMatchInsights,
@@ -628,11 +633,394 @@ apiRouter.post('/notifications/test-push', requireAuth, notificationsLimiter, as
 });
 
 // ----------------------------------------------------
-// Cryptographic Verification Retrieval & Handover Endpoints
+// Cryptographic Verification Retrieval, OTP & Handover Endpoints
 // ----------------------------------------------------
 
+const OTP_EXPIRY_SECONDS = 10 * 60; // 10 minutes
+const OTP_MAX_ISSUES_PER_HOUR = 5;
+const OTP_RATE_WINDOW_MS = 60 * 60 * 1000; // 1 hour
+const VERIFY_LOCK_ATTEMPTS = 5;
+const VERIFY_LOCK_WINDOW_MS = 15 * 60 * 1000; // 15 minutes
+
+// In-memory test stores for unit/integration test suites (active only in test mode when populated)
+export const testVerificationDonationsStore = new Map<string, any>();
+export const testVerificationsStore = new Map<string, any>();
+export const testVerificationAuditLogsStore: any[] = [];
+export const testVerificationImpactRecordsStore: any[] = [];
+
+const useTestVerificationStore = (req: Request, donationId: string): boolean =>
+  isTestOrMockRequest(req) &&
+  (testVerificationDonationsStore.size > 0 || testVerificationDonationsStore.has(donationId));
+
+export function computeOtpHash(salt: string, donationId: string, otp: string): string {
+  return crypto.createHash('sha256').update(`${salt}:${donationId}:${otp}`).digest('hex');
+}
+
+function timingSafeMatchesOtp(
+  verData: Record<string, any>,
+  mode: 'pickup' | 'delivery',
+  donationId: string,
+  candidateOtp: string
+): boolean {
+  const salt = verData?.[`${mode}OtpSalt`];
+  const storedHash = verData?.[`${mode}OtpHash`];
+  if (typeof salt !== 'string' || typeof storedHash !== 'string' || !salt || !storedHash) {
+    return false;
+  }
+  const computedHex = computeOtpHash(salt, donationId, candidateOtp);
+  try {
+    const a = Buffer.from(computedHex, 'hex');
+    const b = Buffer.from(storedHash, 'hex');
+    if (a.length === 0 || a.length !== b.length) return false;
+    return crypto.timingSafeEqual(a, b);
+  } catch {
+    return false;
+  }
+}
+
+function createInitialVerificationRecord(donationId: string, nowIso: string) {
+  return {
+    donationId,
+    pickupToken: generateSecureToken('PKUP'),
+    deliveryToken: generateSecureToken('DLVR'),
+    pickupPin: generateSecurePin(),
+    deliveryPin: generateSecurePin(),
+    pickupUsed: false,
+    deliveryUsed: false,
+    pickupAttempts: 0,
+    deliveryAttempts: 0,
+    createdAt: nowIso,
+    updatedAt: nowIso,
+  };
+}
+
+function buildSanitizedTokenPayload(
+  donationId: string,
+  verData: Record<string, any>,
+  isDonorOrAdmin: boolean
+) {
+  if (isDonorOrAdmin) {
+    return {
+      donationId,
+      mode: 'pickup',
+      pickupToken: verData.pickupToken,
+      pickupPin: verData.pickupPin,
+      pickupUsed: Boolean(verData.pickupUsed),
+    };
+  }
+  return {
+    donationId,
+    mode: 'delivery',
+    deliveryToken: verData.deliveryToken,
+    deliveryPin: verData.deliveryPin,
+    deliveryUsed: Boolean(verData.deliveryUsed),
+  };
+}
+
+function buildOtpIssueUpdate(
+  verData: Record<string, any>,
+  donationId: string,
+  mode: 'pickup' | 'delivery',
+  nowMs: number
+):
+  | { ok: true; otp: string; expiresAt: string; expiresInSeconds: number; patch: Record<string, any> }
+  | { ok: false; status: number; message: string } {
+  const nowIso = new Date(nowMs).toISOString();
+  const countKey = `${mode}OtpIssueCount`;
+  const windowKey = `${mode}OtpWindowStart`;
+
+  const prevCount = Number(verData?.[countKey] || 0);
+  const prevWindowMs = verData?.[windowKey] ? new Date(verData[windowKey]).getTime() : 0;
+  const withinWindow = prevWindowMs > 0 && nowMs - prevWindowMs < OTP_RATE_WINDOW_MS;
+
+  if (withinWindow && prevCount >= OTP_MAX_ISSUES_PER_HOUR) {
+    return {
+      ok: false,
+      status: 429,
+      message: 'OTP generation limit reached (5 per hour). Please wait before generating a new OTP.',
+    };
+  }
+
+  const nextCount = withinWindow ? prevCount + 1 : 1;
+  const nextWindowStart = withinWindow ? verData[windowKey] : nowIso;
+
+  const otp = generateSecurePin();
+  const salt = crypto.randomBytes(16).toString('hex');
+  const hash = computeOtpHash(salt, donationId, otp);
+  const expiresAt = new Date(nowMs + OTP_EXPIRY_SECONDS * 1000).toISOString();
+
+  return {
+    ok: true,
+    otp,
+    expiresAt,
+    expiresInSeconds: OTP_EXPIRY_SECONDS,
+    patch: {
+      [`${mode}OtpSalt`]: salt,
+      [`${mode}OtpHash`]: hash,
+      [`${mode}OtpExpiresAt`]: expiresAt,
+      [`${mode}OtpUsed`]: false,
+      [`${mode}OtpIssuedAt`]: nowIso,
+      [countKey]: nextCount,
+      [windowKey]: nextWindowStart,
+      updatedAt: nowIso,
+    },
+  };
+}
+
+interface VerificationEvalResult {
+  ok: boolean;
+  status: number;
+  message: string;
+  verifiedBy?: 'otp' | 'pin' | 'token';
+  verPatch?: Record<string, any>;
+  donPatch?: Record<string, any>;
+}
+
+function evaluateHandoverVerification(params: {
+  mode: 'pickup' | 'delivery';
+  donationId: string;
+  donation: Record<string, any>;
+  verData: Record<string, any>;
+  trimmedInput: string;
+  actorId: string;
+  actorName: string;
+  nowMs: number;
+}): VerificationEvalResult {
+  const { mode, donationId, donation, verData, trimmedInput, actorId, actorName, nowMs } = params;
+  const now = new Date(nowMs).toISOString();
+  const isPickup = mode === 'pickup';
+
+  const attemptsKey = isPickup ? 'pickupAttempts' : 'deliveryAttempts';
+  const lastAttemptKey = isPickup ? 'lastPickupAttemptAt' : 'lastDeliveryAttemptAt';
+  const usedKey = isPickup ? 'pickupUsed' : 'deliveryUsed';
+  const tokenKey = isPickup ? 'pickupToken' : 'deliveryToken';
+  const pinKey = isPickup ? 'pickupPin' : 'deliveryPin';
+  const otpHashKey = `${mode}OtpHash`;
+  const otpSaltKey = `${mode}OtpSalt`;
+  const otpUsedKey = `${mode}OtpUsed`;
+  const otpExpiresKey = `${mode}OtpExpiresAt`;
+
+  const attempts = Number(verData?.[attemptsKey] || 0);
+  const lastAttempt = verData?.[lastAttemptKey] ? new Date(verData[lastAttemptKey]).getTime() : 0;
+  const lockCutoff = nowMs - VERIFY_LOCK_WINDOW_MS;
+
+  if (attempts >= VERIFY_LOCK_ATTEMPTS && lastAttempt > lockCutoff) {
+    return {
+      ok: false,
+      status: 400,
+      message: isPickup
+        ? 'Too many failed pickup attempts. Handover locked for 15 minutes for security.'
+        : 'Too many failed delivery attempts. Handover locked for 15 minutes for security.',
+    };
+  }
+
+  const isSixDigit = /^\d{6}$/.test(trimmedInput);
+  const hasOtpRecord = Boolean(verData?.[otpHashKey] && verData?.[otpSaltKey]);
+  const otpHashMatches = isSixDigit && hasOtpRecord && timingSafeMatchesOtp(verData, mode, donationId, trimmedInput);
+
+  // If the caller replays an already-used OTP, always return the exact single-use error first
+  if (otpHashMatches && verData?.[otpUsedKey] === true) {
+    const newAttempts = lastAttempt > lockCutoff ? attempts + 1 : 1;
+    return {
+      ok: false,
+      status: 400,
+      message: 'This OTP was already used.',
+      verPatch: {
+        [attemptsKey]: newAttempts,
+        [lastAttemptKey]: now,
+        updatedAt: now,
+      },
+    };
+  }
+
+  // Food safety & status checks
+  if (isPickup) {
+    if (donation?.status === 'expired' || isDonationExpired(donation as any).isExpired) {
+      return {
+        ok: false,
+        status: 400,
+        message: 'Food Safety Guard: This donation has passed its safe consumption deadline and cannot be picked up.',
+      };
+    }
+    if (!['accepted', 'scheduled'].includes(donation?.status)) {
+      return {
+        ok: false,
+        status: 400,
+        message: `Invalid status transition: donation status is "${donation?.status}". Must be accepted or scheduled to verify pickup.`,
+      };
+    }
+    if (donation?.assignedVolunteerId && donation.assignedVolunteerId !== actorId) {
+      return {
+        ok: false,
+        status: 400,
+        message: 'This pickup is assigned to a different volunteer.',
+      };
+    }
+  } else {
+    if (donation?.status === 'expired') {
+      return {
+        ok: false,
+        status: 400,
+        message: 'Food Safety Guard: This donation has expired and cannot be delivered.',
+      };
+    }
+    if (!['picked_up', 'in_transit'].includes(donation?.status)) {
+      return {
+        ok: false,
+        status: 400,
+        message: `Invalid status transition: donation status is "${donation?.status}". Must be picked_up or in_transit to confirm delivery.`,
+      };
+    }
+  }
+
+  if (verData?.[usedKey]) {
+    return {
+      ok: false,
+      status: 400,
+      message: isPickup
+        ? 'Pickup token has already been confirmed and cannot be replayed.'
+        : 'Delivery token has already been confirmed and cannot be replayed.',
+    };
+  }
+
+  // 1. Check 6-digit OTP first when present
+  let verifiedBy: 'otp' | 'pin' | 'token' | null = null;
+  if (otpHashMatches) {
+    const expiresAtMs = verData?.[otpExpiresKey] ? new Date(verData[otpExpiresKey]).getTime() : 0;
+    if (!expiresAtMs || nowMs > expiresAtMs) {
+      const newAttempts = lastAttempt > lockCutoff ? attempts + 1 : 1;
+      return {
+        ok: false,
+        status: 400,
+        message: isPickup
+          ? 'OTP has expired. Ask the donor to generate a new one.'
+          : 'OTP has expired. Ask the shelter/NGO to generate a new one.',
+        verPatch: {
+          [attemptsKey]: newAttempts,
+          [lastAttemptKey]: now,
+          updatedAt: now,
+        },
+      };
+    }
+    verifiedBy = 'otp';
+  }
+
+  // 2. Fallback to legacy static PIN and QR token
+  if (!verifiedBy) {
+    const matchesToken = verData?.[tokenKey]?.toUpperCase() === trimmedInput;
+    const matchesPin = verData?.[pinKey] === trimmedInput;
+    if (matchesToken) {
+      verifiedBy = 'token';
+    } else if (matchesPin) {
+      verifiedBy = 'pin';
+    }
+  }
+
+  if (!verifiedBy) {
+    const newAttempts = lastAttempt > lockCutoff ? attempts + 1 : 1;
+    const remaining = Math.max(0, VERIFY_LOCK_ATTEMPTS - newAttempts);
+    const errorMsg =
+      isSixDigit && hasOtpRecord
+        ? `Invalid OTP (${remaining} attempts remaining).`
+        : isPickup
+        ? `Invalid verification code or PIN (${remaining} attempts remaining).`
+        : `Invalid delivery token or PIN (${remaining} attempts remaining).`;
+
+    return {
+      ok: false,
+      status: 400,
+      message: errorMsg,
+      verPatch: {
+        [attemptsKey]: newAttempts,
+        [lastAttemptKey]: now,
+        updatedAt: now,
+      },
+    };
+  }
+
+  // Valid handover confirmed
+  const timeline = Array.isArray(donation?.timeline) ? [...donation.timeline] : [];
+  if (isPickup) {
+    timeline.push({
+      status: 'picked_up',
+      timestamp: now,
+      actorName,
+      actorId,
+      note:
+        verifiedBy === 'otp'
+          ? 'Physical pickup verified via server-authenticated one-time password (OTP).'
+          : 'Physical pickup verified via secure server-authenticated QR handover.',
+    });
+
+    const verPatch: Record<string, any> = {
+      pickupUsed: true,
+      pickupAttempts: 0,
+      pickedUpAt: now,
+      pickedUpBy: actorId,
+      pickedUpByName: actorName,
+      updatedAt: now,
+    };
+    if (hasOtpRecord) {
+      verPatch.pickupOtpUsed = true;
+    }
+
+    return {
+      ok: true,
+      status: 200,
+      verifiedBy,
+      message: 'Pickup handover successfully verified! Donation marked as in transit.',
+      verPatch,
+      donPatch: {
+        status: 'picked_up',
+        assignedVolunteerId: actorId,
+        assignedVolunteerName: actorName,
+        pickedUpAt: now,
+        updatedAt: now,
+        timeline,
+      },
+    };
+  }
+
+  timeline.push({
+    status: 'delivered',
+    timestamp: now,
+    actorName,
+    actorId,
+    note:
+      verifiedBy === 'otp'
+        ? 'Shelter delivery receipt confirmed via server-authenticated one-time password (OTP).'
+        : 'Shelter delivery receipt confirmed via verified server-authenticated token.',
+  });
+
+  const verPatch: Record<string, any> = {
+    deliveryUsed: true,
+    deliveryAttempts: 0,
+    deliveredAt: now,
+    deliveredBy: actorId,
+    deliveredByName: actorName,
+    updatedAt: now,
+  };
+  if (hasOtpRecord) {
+    verPatch.deliveryOtpUsed = true;
+  }
+
+  return {
+    ok: true,
+    status: 200,
+    verifiedBy,
+    message: 'Delivery successfully verified! Donation marked as delivered and impact recorded.',
+    verPatch,
+    donPatch: {
+      status: 'delivered',
+      deliveredAt: now,
+      updatedAt: now,
+      timeline,
+    },
+  };
+}
+
 // GET /api/verify/:donationId/token
-// Returns role-sanitized tokens:
+// Returns role-sanitized tokens (never returns OTP hashes or salts):
 // - Donor: can read pickupToken & pickupPin
 // - Assigned NGO: can read deliveryToken & deliveryPin
 // - Volunteer: returns 403 Forbidden!
@@ -642,14 +1030,36 @@ apiRouter.get('/verify/:donationId/token', requireAuth, async (req: Request, res
     const { donationId } = req.params;
 
     if (!donationId) {
-      return sendJson(res, 400, { error: 'donationId is required' });
+      return sendJson(res, 400, { success: false, error: 'donationId is required' });
+    }
+
+    if (useTestVerificationStore(req, donationId)) {
+      const donation = testVerificationDonationsStore.get(donationId);
+      if (!donation) {
+        return sendJson(res, 404, { success: false, error: 'Donation not found' });
+      }
+      const isDonor = donation?.donorId === user.uid;
+      const isAssignedNgo = donation?.assignedNgoId === user.uid;
+      const isAdminUser = user.role === 'admin';
+      if (!isDonor && !isAssignedNgo && !isAdminUser) {
+        return sendJson(res, 403, {
+          success: false,
+          error: 'Forbidden: Volunteers and unauthorized users cannot view handover verification tokens or PINs.',
+        });
+      }
+      let verData = testVerificationsStore.get(donationId);
+      if (!verData) {
+        verData = createInitialVerificationRecord(donationId, new Date().toISOString());
+        testVerificationsStore.set(donationId, verData);
+      }
+      return sendJson(res, 200, buildSanitizedTokenPayload(donationId, verData, isDonor || isAdminUser));
     }
 
     const donRef = adminDb().collection('donations').doc(donationId);
     const donSnap = await donRef.get();
 
     if (!donSnap.exists) {
-      return sendJson(res, 404, { error: 'Donation not found' });
+      return sendJson(res, 404, { success: false, error: 'Donation not found' });
     }
 
     const donation = donSnap.data();
@@ -659,6 +1069,7 @@ apiRouter.get('/verify/:donationId/token', requireAuth, async (req: Request, res
 
     if (!isDonor && !isAssignedNgo && !isAdminUser) {
       return sendJson(res, 403, {
+        success: false,
         error: 'Forbidden: Volunteers and unauthorized users cannot view handover verification tokens or PINs.',
       });
     }
@@ -668,161 +1079,249 @@ apiRouter.get('/verify/:donationId/token', requireAuth, async (req: Request, res
     let verSnap = await verRef.get();
 
     if (!verSnap.exists) {
-      const now = new Date().toISOString();
-      const newVerRecord = {
-        donationId,
-        pickupToken: generateSecureToken('PKUP'),
-        deliveryToken: generateSecureToken('DLVR'),
-        pickupPin: generateSecurePin(),
-        deliveryPin: generateSecurePin(),
-        pickupUsed: false,
-        deliveryUsed: false,
-        pickupAttempts: 0,
-        deliveryAttempts: 0,
-        createdAt: now,
-        updatedAt: now,
-      };
-
+      const newVerRecord = createInitialVerificationRecord(donationId, new Date().toISOString());
       await verRef.set(newVerRecord);
       verSnap = await verRef.get();
     }
 
     const verData = verSnap.data() || {};
-
-    if (isDonor || isAdminUser) {
-      return sendJson(res, 200, {
-        donationId,
-        mode: 'pickup',
-        pickupToken: verData.pickupToken,
-        pickupPin: verData.pickupPin,
-        pickupUsed: Boolean(verData.pickupUsed),
-      });
-    }
-
-    if (isAssignedNgo) {
-      return sendJson(res, 200, {
-        donationId,
-        mode: 'delivery',
-        deliveryToken: verData.deliveryToken,
-        deliveryPin: verData.deliveryPin,
-        deliveryUsed: Boolean(verData.deliveryUsed),
-      });
-    }
-
-    return sendJson(res, 403, { error: 'Forbidden' });
+    return sendJson(res, 200, buildSanitizedTokenPayload(donationId, verData, isDonor || isAdminUser));
   } catch (error: any) {
     console.error('[Verify Token] Error:', error);
-    sendJson(res, 500, { error: error.message || 'Internal Server Error' });
+    if (isCredentialOrPermissionError(error)) {
+      return sendJson(res, 503, SERVER_NOT_CONFIGURED_RESPONSE);
+    }
+    sendJson(res, 500, { success: false, message: error.message || 'Internal Server Error', error: error.message || 'Internal Server Error' });
+  }
+});
+
+// POST /api/verify/:donationId/otp
+// Generates a cryptographically random 6-digit single-use OTP (10-min TTL, 5/hour rate limit).
+// Stores ONLY a salted SHA-256 hash on verifications/{donationId}; plain OTP is returned only here.
+apiRouter.post('/verify/:donationId/otp', requireAuth, verificationLimiter, async (req: Request, res: Response) => {
+  try {
+    const user = (req as any).user as AuthenticatedUser;
+    const { donationId } = req.params;
+    const mode = req.body?.mode;
+
+    if (!donationId || typeof donationId !== 'string') {
+      return sendJson(res, 400, { success: false, message: 'donationId is required.' });
+    }
+    if (mode !== 'pickup' && mode !== 'delivery') {
+      return sendJson(res, 400, { success: false, message: 'mode must be "pickup" or "delivery".' });
+    }
+
+    const nowMs = Date.now();
+
+    const validateCallerAndStatus = (donation: Record<string, any> | undefined) => {
+      if (!donation) {
+        return { status: 404, message: 'Donation not found.' };
+      }
+      const isDonor = donation.donorId === user.uid;
+      const isAssignedNgo = donation.assignedNgoId === user.uid;
+      const isAdminUser = user.role === 'admin';
+
+      if (mode === 'pickup') {
+        if (!isDonor && !isAdminUser) {
+          return { status: 403, message: 'Forbidden: Only the donation donor or an admin can generate a pickup OTP.' };
+        }
+        if (donation.status === 'expired' || isDonationExpired(donation as any).isExpired) {
+          return { status: 400, message: 'Food Safety Guard: This donation has expired and cannot generate a pickup OTP.' };
+        }
+        if (donation.status !== 'accepted' && donation.status !== 'scheduled') {
+          return {
+            status: 400,
+            message: `Pickup OTP can only be generated when the donation is accepted or scheduled (current status: "${donation.status}").`,
+          };
+        }
+      } else {
+        if (!isAssignedNgo && !isAdminUser) {
+          return { status: 403, message: 'Forbidden: Only the assigned NGO or an admin can generate a delivery OTP.' };
+        }
+        if (donation.status !== 'picked_up' && donation.status !== 'in_transit') {
+          return {
+            status: 400,
+            message: `Delivery OTP can only be generated when the donation is picked_up or in_transit (current status: "${donation.status}").`,
+          };
+        }
+      }
+      return null;
+    };
+
+    if (useTestVerificationStore(req, donationId)) {
+      const donation = testVerificationDonationsStore.get(donationId);
+      const checkErr = validateCallerAndStatus(donation);
+      if (checkErr) {
+        return sendJson(res, checkErr.status, { success: false, message: checkErr.message });
+      }
+      const existingVer =
+        testVerificationsStore.get(donationId) || createInitialVerificationRecord(donationId, new Date(nowMs).toISOString());
+      const issued = buildOtpIssueUpdate(existingVer, donationId, mode, nowMs);
+      if (!issued.ok) {
+        return sendJson(res, issued.status, { success: false, message: issued.message });
+      }
+      testVerificationsStore.set(donationId, { ...existingVer, ...issued.patch });
+      return sendJson(res, 200, {
+        success: true,
+        otp: issued.otp,
+        expiresAt: issued.expiresAt,
+        expiresInSeconds: issued.expiresInSeconds,
+      });
+    }
+
+    const firestore = adminDb();
+    const txResult = await firestore.runTransaction(async (tx) => {
+      const donRef = firestore.collection('donations').doc(donationId);
+      const verRef = firestore.collection('verifications').doc(donationId);
+      const [donSnap, verSnap] = await Promise.all([tx.get(donRef), tx.get(verRef)]);
+
+      const checkErr = validateCallerAndStatus(donSnap.exists ? donSnap.data() : undefined);
+      if (checkErr) {
+        return { ok: false as const, status: checkErr.status, message: checkErr.message };
+      }
+
+      const nowIso = new Date(nowMs).toISOString();
+      const baseVer = verSnap.exists
+        ? (verSnap.data() as Record<string, any>)
+        : createInitialVerificationRecord(donationId, nowIso);
+
+      const issued = buildOtpIssueUpdate(baseVer, donationId, mode, nowMs);
+      if (!issued.ok) {
+        return { ok: false as const, status: issued.status, message: issued.message };
+      }
+
+      if (verSnap.exists) {
+        tx.update(verRef, issued.patch);
+      } else {
+        tx.set(verRef, { ...baseVer, ...issued.patch });
+      }
+
+      return {
+        ok: true as const,
+        otp: issued.otp,
+        expiresAt: issued.expiresAt,
+        expiresInSeconds: issued.expiresInSeconds,
+      };
+    });
+
+    if (!txResult.ok) {
+      return sendJson(res, txResult.status, { success: false, message: txResult.message });
+    }
+
+    return sendJson(res, 200, {
+      success: true,
+      otp: txResult.otp,
+      expiresAt: txResult.expiresAt,
+      expiresInSeconds: txResult.expiresInSeconds,
+    });
+  } catch (error: any) {
+    console.error('[Verify OTP Generate] Error:', error);
+    if (isCredentialOrPermissionError(error)) {
+      return sendJson(res, 503, SERVER_NOT_CONFIGURED_RESPONSE);
+    }
+    return sendJson(res, 500, { success: false, message: error.message || 'Failed to generate OTP.' });
   }
 });
 
 // POST /api/verify/pickup
-// Performs pickup verification inside a server-side Firestore transaction with single-use & rate-limiting
+// Performs pickup verification inside a server-side Firestore transaction with OTP, single-use & rate-limiting
 apiRouter.post('/verify/pickup', requireAuth, verificationLimiter, async (req: Request, res: Response) => {
   try {
     const user = (req as any).user as AuthenticatedUser;
     const { donationId, tokenOrPin, volunteerName } = req.body || {};
 
     if (!donationId || typeof donationId !== 'string') {
-      return sendJson(res, 400, { error: 'donationId is required' });
+      return sendJson(res, 400, { success: false, error: 'donationId is required', message: 'donationId is required' });
     }
     if (!tokenOrPin || typeof tokenOrPin !== 'string') {
-      return sendJson(res, 400, { error: 'tokenOrPin is required' });
+      return sendJson(res, 400, { success: false, error: 'tokenOrPin is required', message: 'tokenOrPin is required' });
     }
 
     const trimmedInput = tokenOrPin.trim().toUpperCase();
     const volunteerId = user.uid;
     const actorName = String(volunteerName || user.email?.split('@')[0] || 'Authorized Courier');
+    const nowMs = Date.now();
+    const now = new Date(nowMs).toISOString();
 
-    const result = await adminDb().runTransaction(async (tx) => {
-      const donRef = adminDb().collection('donations').doc(donationId);
-      const verRef = adminDb().collection('verifications').doc(donationId);
+    if (useTestVerificationStore(req, donationId)) {
+      const donation = testVerificationDonationsStore.get(donationId);
+      if (!donation) {
+        return sendJson(res, 400, { success: false, message: 'Donation record not found' });
+      }
+      const verData = testVerificationsStore.get(donationId);
+      if (!verData) {
+        return sendJson(res, 400, { success: false, message: 'Verification record not found for this donation' });
+      }
+      const evalRes = evaluateHandoverVerification({
+        mode: 'pickup',
+        donationId,
+        donation,
+        verData,
+        trimmedInput,
+        actorId: volunteerId,
+        actorName,
+        nowMs,
+      });
+      if (evalRes.verPatch) {
+        testVerificationsStore.set(donationId, { ...verData, ...evalRes.verPatch });
+      }
+      if (!evalRes.ok) {
+        return sendJson(res, evalRes.status, { success: false, message: evalRes.message });
+      }
+      if (evalRes.donPatch) {
+        testVerificationDonationsStore.set(donationId, { ...donation, ...evalRes.donPatch });
+      }
+      testVerificationAuditLogsStore.push({
+        id: `audit_${nowMs}`,
+        action: 'VERIFY_PICKUP',
+        performedBy: volunteerId,
+        targetId: donationId,
+        details: `Pickup verified (${evalRes.verifiedBy}) by volunteer ${actorName} (${volunteerId}) for donation ${donationId}.`,
+        timestamp: now,
+      });
+      return sendJson(res, 200, { success: true, message: evalRes.message });
+    }
+
+    const firestore = adminDb();
+    const result = await firestore.runTransaction(async (tx) => {
+      const donRef = firestore.collection('donations').doc(donationId);
+      const verRef = firestore.collection('verifications').doc(donationId);
 
       const [donSnap, verSnap] = await Promise.all([tx.get(donRef), tx.get(verRef)]);
 
       if (!donSnap.exists) {
-        throw new Error('Donation record not found');
+        return { ok: false, status: 400, message: 'Donation record not found' };
       }
-
-      const donation = donSnap.data();
-      if (donation?.status === 'expired' || isDonationExpired(donation as any).isExpired) {
-        throw new Error('Food Safety Guard: This donation has passed its safe consumption deadline and cannot be picked up.');
-      }
-
-      if (!['accepted', 'scheduled'].includes(donation?.status)) {
-        throw new Error(`Invalid status transition: donation status is "${donation?.status}". Must be accepted or scheduled to verify pickup.`);
-      }
-
-      // Check volunteer assignment mismatch
-      if (donation?.assignedVolunteerId && donation.assignedVolunteerId !== volunteerId) {
-        throw new Error('This pickup is assigned to a different volunteer.');
-      }
-
       if (!verSnap.exists) {
-        throw new Error('Verification record not found for this donation');
+        return { ok: false, status: 400, message: 'Verification record not found for this donation' };
       }
 
-      const verData = verSnap.data();
+      const donation = donSnap.data() || {};
+      const verData = verSnap.data() || {};
 
-      // Check PIN attempts & 15-minute lock
-      const attempts = Number(verData?.pickupAttempts || 0);
-      const lastAttempt = verData?.lastPickupAttemptAt ? new Date(verData.lastPickupAttemptAt).getTime() : 0;
-      const fifteenMinsAgo = Date.now() - 15 * 60 * 1000;
-
-      if (attempts >= 5 && lastAttempt > fifteenMinsAgo) {
-        throw new Error('Too many failed pickup attempts. Handover locked for 15 minutes for security.');
-      }
-
-      if (verData?.pickupUsed) {
-        throw new Error('Pickup token has already been confirmed and cannot be replayed.');
-      }
-
-      const matchesToken = verData?.pickupToken?.toUpperCase() === trimmedInput;
-      const matchesPin = verData?.pickupPin === trimmedInput;
-
-      const now = new Date().toISOString();
-
-      if (!matchesToken && !matchesPin) {
-        const newAttempts = lastAttempt > fifteenMinsAgo ? attempts + 1 : 1;
-        tx.update(verRef, {
-          pickupAttempts: newAttempts,
-          lastPickupAttemptAt: now,
-          updatedAt: now,
-        });
-        throw new Error(`Invalid verification code or PIN (${5 - newAttempts} attempts remaining).`);
-      }
-
-      // Valid pickup confirmed: update verification doc
-      tx.update(verRef, {
-        pickupUsed: true,
-        pickupAttempts: 0,
-        pickedUpAt: now,
-        pickedUpBy: volunteerId,
-        pickedUpByName: actorName,
-        updatedAt: now,
-      });
-
-      // Update donation status to picked_up
-      const timeline = donation?.timeline || [];
-      timeline.push({
-        status: 'picked_up',
-        timestamp: now,
-        actorName,
+      const evalRes = evaluateHandoverVerification({
+        mode: 'pickup',
+        donationId,
+        donation,
+        verData,
+        trimmedInput,
         actorId: volunteerId,
-        note: 'Physical pickup verified via secure server-authenticated QR handover.',
+        actorName,
+        nowMs,
       });
 
-      tx.update(donRef, {
-        status: 'picked_up',
-        assignedVolunteerId: volunteerId,
-        assignedVolunteerName: actorName,
-        pickedUpAt: now,
-        updatedAt: now,
-        timeline,
-      });
+      if (evalRes.verPatch) {
+        tx.update(verRef, evalRes.verPatch);
+      }
+      if (!evalRes.ok) {
+        return { ok: false, status: evalRes.status, message: evalRes.message };
+      }
+      if (evalRes.donPatch) {
+        tx.update(donRef, evalRes.donPatch);
+      }
 
       // Write server-side audit log
-      const auditRef = adminDb().collection('auditLogs').doc();
+      const auditRef = firestore.collection('auditLogs').doc();
       tx.set(auditRef, {
         id: auditRef.id,
         action: 'VERIFY_PICKUP',
@@ -833,14 +1332,21 @@ apiRouter.post('/verify/pickup', requireAuth, verificationLimiter, async (req: R
       });
 
       return {
-        success: true,
-        message: 'Pickup handover successfully verified! Donation marked as in transit.',
+        ok: true,
+        status: 200,
+        message: evalRes.message,
       };
     });
 
-    sendJson(res, 200, result);
+    if (!result.ok) {
+      return sendJson(res, result.status, { success: false, message: result.message });
+    }
+    return sendJson(res, 200, { success: true, message: result.message });
   } catch (error: any) {
-    console.warn('[Verify Pickup] Error:', error.message);
+    console.error('[Verify Pickup] Error:', error);
+    if (isCredentialOrPermissionError(error)) {
+      return sendJson(res, 503, SERVER_NOT_CONFIGURED_RESPONSE);
+    }
     sendJson(res, 400, { success: false, message: error.message || 'Verification failure' });
   }
 });
@@ -853,95 +1359,111 @@ apiRouter.post('/verify/delivery', requireAuth, verificationLimiter, async (req:
     const { donationId, tokenOrPin, verifierName } = req.body || {};
 
     if (!donationId || typeof donationId !== 'string') {
-      return sendJson(res, 400, { error: 'donationId is required' });
+      return sendJson(res, 400, { success: false, error: 'donationId is required', message: 'donationId is required' });
     }
     if (!tokenOrPin || typeof tokenOrPin !== 'string') {
-      return sendJson(res, 400, { error: 'tokenOrPin is required' });
+      return sendJson(res, 400, { success: false, error: 'tokenOrPin is required', message: 'tokenOrPin is required' });
     }
 
     const trimmedInput = tokenOrPin.trim().toUpperCase();
     const verifierId = user.uid;
     const actorName = String(verifierName || user.email?.split('@')[0] || 'Shelter Coordinator');
+    const nowMs = Date.now();
+    const now = new Date(nowMs).toISOString();
 
-    const result = await adminDb().runTransaction(async (tx) => {
-      const donRef = adminDb().collection('donations').doc(donationId);
-      const verRef = adminDb().collection('verifications').doc(donationId);
+    if (useTestVerificationStore(req, donationId)) {
+      const donation = testVerificationDonationsStore.get(donationId);
+      if (!donation) {
+        return sendJson(res, 400, { success: false, message: 'Donation record not found' });
+      }
+      const verData = testVerificationsStore.get(donationId);
+      if (!verData) {
+        return sendJson(res, 400, { success: false, message: 'Verification record not found for this delivery' });
+      }
+      const evalRes = evaluateHandoverVerification({
+        mode: 'delivery',
+        donationId,
+        donation,
+        verData,
+        trimmedInput,
+        actorId: verifierId,
+        actorName,
+        nowMs,
+      });
+      if (evalRes.verPatch) {
+        testVerificationsStore.set(donationId, { ...verData, ...evalRes.verPatch });
+      }
+      if (!evalRes.ok) {
+        return sendJson(res, evalRes.status, { success: false, message: evalRes.message });
+      }
+      if (evalRes.donPatch) {
+        testVerificationDonationsStore.set(donationId, { ...donation, ...evalRes.donPatch });
+      }
+      const quantity = Number(donation?.quantity) || 0;
+      const unit = String(donation?.unit || '').toLowerCase();
+      const servings = Number(donation?.servings) || 0;
+      const quantityKg = unit === 'kg' ? quantity : servings ? servings * 0.4 : quantity * 0.5;
+      const estimatedMeals = servings || Math.round(quantityKg * 2.5);
+      const impactId = `impact_${nowMs}`;
+      testVerificationImpactRecordsStore.push({
+        id: impactId,
+        donationId,
+        foodName: donation?.foodName || 'Surplus Food',
+        quantityKg: Math.round(quantityKg * 10) / 10,
+        estimatedMeals,
+        donorId: donation?.donorId,
+        ngoId: donation?.assignedNgoId || verifierId,
+        volunteerId: donation?.assignedVolunteerId || verifierId,
+        deliveredAt: now,
+      });
+      testVerificationAuditLogsStore.push({
+        id: `audit_${nowMs}`,
+        action: 'VERIFY_DELIVERY',
+        performedBy: verifierId,
+        targetId: donationId,
+        details: `Delivery verified (${evalRes.verifiedBy}) by ${actorName} (${verifierId}) for donation ${donationId}. Impact record ${impactId} created.`,
+        timestamp: now,
+      });
+      return sendJson(res, 200, { success: true, message: evalRes.message });
+    }
+
+    const firestore = adminDb();
+    const result = await firestore.runTransaction(async (tx) => {
+      const donRef = firestore.collection('donations').doc(donationId);
+      const verRef = firestore.collection('verifications').doc(donationId);
 
       const [donSnap, verSnap] = await Promise.all([tx.get(donRef), tx.get(verRef)]);
 
       if (!donSnap.exists) {
-        throw new Error('Donation record not found');
+        return { ok: false, status: 400, message: 'Donation record not found' };
       }
-
-      const donation = donSnap.data();
-      if (donation?.status === 'expired') {
-        throw new Error('Food Safety Guard: This donation has expired and cannot be delivered.');
-      }
-
-      if (!['picked_up', 'in_transit'].includes(donation?.status)) {
-        throw new Error(`Invalid status transition: donation status is "${donation?.status}". Must be picked_up or in_transit to confirm delivery.`);
-      }
-
       if (!verSnap.exists) {
-        throw new Error('Verification record not found for this delivery');
+        return { ok: false, status: 400, message: 'Verification record not found for this delivery' };
       }
 
-      const verData = verSnap.data();
+      const donation = donSnap.data() || {};
+      const verData = verSnap.data() || {};
 
-      // Check PIN attempts & 15-minute lock
-      const attempts = Number(verData?.deliveryAttempts || 0);
-      const lastAttempt = verData?.lastDeliveryAttemptAt ? new Date(verData.lastDeliveryAttemptAt).getTime() : 0;
-      const fifteenMinsAgo = Date.now() - 15 * 60 * 1000;
-
-      if (attempts >= 5 && lastAttempt > fifteenMinsAgo) {
-        throw new Error('Too many failed delivery attempts. Handover locked for 15 minutes for security.');
-      }
-
-      if (verData?.deliveryUsed) {
-        throw new Error('Delivery token has already been confirmed and cannot be replayed.');
-      }
-
-      const matchesToken = verData?.deliveryToken?.toUpperCase() === trimmedInput;
-      const matchesPin = verData?.deliveryPin === trimmedInput;
-
-      const now = new Date().toISOString();
-
-      if (!matchesToken && !matchesPin) {
-        const newAttempts = lastAttempt > fifteenMinsAgo ? attempts + 1 : 1;
-        tx.update(verRef, {
-          deliveryAttempts: newAttempts,
-          lastDeliveryAttemptAt: now,
-          updatedAt: now,
-        });
-        throw new Error(`Invalid delivery token or PIN (${5 - newAttempts} attempts remaining).`);
-      }
-
-      // Valid delivery confirmed: update verification doc
-      tx.update(verRef, {
-        deliveryUsed: true,
-        deliveryAttempts: 0,
-        deliveredAt: now,
-        deliveredBy: verifierId,
-        deliveredByName: actorName,
-        updatedAt: now,
-      });
-
-      // Update donation status to delivered
-      const timeline = donation?.timeline || [];
-      timeline.push({
-        status: 'delivered',
-        timestamp: now,
-        actorName,
+      const evalRes = evaluateHandoverVerification({
+        mode: 'delivery',
+        donationId,
+        donation,
+        verData,
+        trimmedInput,
         actorId: verifierId,
-        note: 'Shelter delivery receipt confirmed via verified server-authenticated token.',
+        actorName,
+        nowMs,
       });
 
-      tx.update(donRef, {
-        status: 'delivered',
-        deliveredAt: now,
-        updatedAt: now,
-        timeline,
-      });
+      if (evalRes.verPatch) {
+        tx.update(verRef, evalRes.verPatch);
+      }
+      if (!evalRes.ok) {
+        return { ok: false, status: evalRes.status, message: evalRes.message };
+      }
+      if (evalRes.donPatch) {
+        tx.update(donRef, evalRes.donPatch);
+      }
 
       // Calculate quantityKg and servings for official server-side Impact Record
       const quantity = Number(donation?.quantity) || 0;
@@ -952,7 +1474,7 @@ apiRouter.post('/verify/delivery', requireAuth, verificationLimiter, async (req:
       const estimatedMeals = servings || Math.round(quantityKg * 2.5);
 
       // Create server-side verified ImpactRecord
-      const impactRef = adminDb().collection('impactRecords').doc();
+      const impactRef = firestore.collection('impactRecords').doc();
       tx.set(impactRef, {
         id: impactRef.id,
         donationId,
@@ -966,7 +1488,7 @@ apiRouter.post('/verify/delivery', requireAuth, verificationLimiter, async (req:
       });
 
       // Create server-side AuditLog
-      const auditRef = adminDb().collection('auditLogs').doc();
+      const auditRef = firestore.collection('auditLogs').doc();
       tx.set(auditRef, {
         id: auditRef.id,
         action: 'VERIFY_DELIVERY',
@@ -977,14 +1499,21 @@ apiRouter.post('/verify/delivery', requireAuth, verificationLimiter, async (req:
       });
 
       return {
-        success: true,
-        message: 'Delivery successfully verified! Donation marked as delivered and impact recorded.',
+        ok: true,
+        status: 200,
+        message: evalRes.message,
       };
     });
 
-    sendJson(res, 200, result);
+    if (!result.ok) {
+      return sendJson(res, result.status, { success: false, message: result.message });
+    }
+    return sendJson(res, 200, { success: true, message: result.message });
   } catch (error: any) {
-    console.warn('[Verify Delivery] Error:', error.message);
+    console.error('[Verify Delivery] Error:', error);
+    if (isCredentialOrPermissionError(error)) {
+      return sendJson(res, 503, SERVER_NOT_CONFIGURED_RESPONSE);
+    }
     sendJson(res, 400, { success: false, message: error.message || 'Verification failure' });
   }
 });
@@ -994,8 +1523,32 @@ apiRouter.post('/verify/delivery', requireAuth, verificationLimiter, async (req:
 apiRouter.post('/donations/accept-volunteer', requireAuth, verificationLimiter, handleAcceptVolunteerDonation);
 apiRouter.post('/donations/accept', requireAuth, verificationLimiter, handleAcceptVolunteerDonation);
 
+// JSON 404 handler for unknown /api/* routes (never return HTML)
+apiRouter.use((_req: Request, res: Response) => {
+  sendJson(res, 404, { success: false, message: 'API route not found.' });
+});
+
 // Mount API router strictly under /api so static assets & Vite dev middleware are never rate-limited
 app.use('/api', apiRouter);
+
+// Final Express JSON error-handling middleware (ensures API/body-parser errors always return JSON)
+app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
+  if (res.headersSent) return;
+  console.error('[API Error]', err);
+  if (isCredentialOrPermissionError(err)) {
+    return sendJson(res, 503, SERVER_NOT_CONFIGURED_RESPONSE);
+  }
+  const status =
+    typeof err?.status === 'number' && err.status >= 400 && err.status < 600
+      ? err.status
+      : typeof err?.statusCode === 'number' && err.statusCode >= 400 && err.statusCode < 600
+      ? err.statusCode
+      : 500;
+  return sendJson(res, status, {
+    success: false,
+    message: err?.message || 'Internal Server Error',
+  });
+});
 
 // Start scheduled background expiration monitoring in server environments
 if (process.env.NODE_ENV !== 'test' && !process.env.DISABLE_CRON && !process.env.VERCEL) {

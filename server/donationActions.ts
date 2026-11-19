@@ -1,5 +1,9 @@
 import { Request, Response } from 'express';
-import { adminDb } from './firebaseAdmin.js';
+import {
+  adminDb,
+  isCredentialOrPermissionError,
+  SERVER_NOT_CONFIGURED_RESPONSE,
+} from './firebaseAdmin.js';
 import { isDonationExpired } from '../src/utils/foodSafety.js';
 
 // In-memory test store for mock/unit test environments
@@ -284,6 +288,9 @@ export async function handleAcceptVolunteerDonation(req: Request, res: Response)
     }
 
     console.error('[accept-volunteer] Server transaction failed:', err);
+    if (isCredentialOrPermissionError(err)) {
+      return sendJson(503, SERVER_NOT_CONFIGURED_RESPONSE);
+    }
     return sendJson(503, {
       success: false,
       code: 'ADMIN_UNAVAILABLE',

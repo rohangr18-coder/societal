@@ -2,63 +2,90 @@ import { doc, getDoc } from 'firebase/firestore';
 import { db, auth } from '../lib/firebase';
 import { VerificationRecord } from '../types';
 
-function generateSecureToken(prefix: string): string {
-  if (typeof window !== 'undefined' && window.crypto && window.crypto.getRandomValues) {
-    const arr = new Uint8Array(4);
-    window.crypto.getRandomValues(arr);
-    const hex = Array.from(arr, (b) => b.toString(16).padStart(2, '0')).join('').toUpperCase();
-    return `${prefix}-${hex}`;
+async function getAuthHeaders(): Promise<Record<string, string>> {
+  const idToken = await auth.currentUser?.getIdToken();
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+  };
+  if (idToken) {
+    headers['Authorization'] = `Bearer ${idToken}`;
   }
-  return `${prefix}-TOKEN`;
+  return headers;
+}
+
+function tryParseJson(rawText: string): { valid: boolean; data: any } {
+  if (!rawText) return { valid: false, data: null };
+  try {
+    return { valid: true, data: JSON.parse(rawText) };
+  } catch {
+    return { valid: false, data: null };
+  }
 }
 
 export async function getOrCreateVerification(donationId: string): Promise<VerificationRecord> {
-  try {
-    const idToken = await auth.currentUser?.getIdToken();
-    const headers: Record<string, string> = {
-      'Content-Type': 'application/json',
-    };
-    if (idToken) {
-      headers['Authorization'] = `Bearer ${idToken}`;
-    }
+  const headers = await getAuthHeaders();
+  const response = await fetch(`/api/verify/${encodeURIComponent(donationId)}/token`, {
+    method: 'GET',
+    headers,
+  });
 
-    const response = await fetch(`/api/verify/${donationId}/token`, {
-      method: 'GET',
-      headers,
-    });
+  const rawText = await response.text();
+  const { valid, data } = tryParseJson(rawText);
 
-    if (response.ok) {
-      const data = await response.json();
-      return {
-        donationId,
-        pickupToken: data.pickupToken || '',
-        pickupPin: data.pickupPin || '',
-        deliveryToken: data.deliveryToken || '',
-        deliveryPin: data.deliveryPin || '',
-        pickupUsed: Boolean(data.pickupUsed),
-        deliveryUsed: Boolean(data.deliveryUsed),
-        createdAt: data.createdAt || new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-      };
-    }
-
-    // Fallback: If server is in dev or user is unauthenticated
-    const errData = await response.json().catch(() => ({}));
-    throw new Error(errData.error || `Failed to fetch verification tokens (${response.status})`);
-  } catch (error: any) {
-    console.warn('Verification retrieval notice (using local fallback if dev):', error.message);
-    return {
-      donationId,
-      pickupToken: generateSecureToken('PKUP'),
-      deliveryToken: generateSecureToken('DLVR'),
-      pickupPin: '123456',
-      deliveryPin: '654321',
-      pickupUsed: false,
-      deliveryUsed: false,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-    };
+  if (!valid) {
+    throw new Error(
+      `Failed to load verification code (HTTP ${response.status}). Server returned an unexpected response.`
+    );
   }
+
+  if (!response.ok) {
+    const serverMsg = data?.message || data?.error || `Failed to load verification code (HTTP ${response.status}).`;
+    throw new Error(`${serverMsg} (HTTP ${response.status})`);
+  }
+
+  return {
+    donationId,
+    pickupToken: data.pickupToken || '',
+    pickupPin: data.pickupPin || '',
+    deliveryToken: data.deliveryToken || '',
+    deliveryPin: data.deliveryPin || '',
+    pickupUsed: Boolean(data.pickupUsed),
+    deliveryUsed: Boolean(data.deliveryUsed),
+    createdAt: data.createdAt || new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+export async function generateVerificationOtp(
+  donationId: string,
+  mode: 'pickup' | 'delivery'
+): Promise<{ otp: string; expiresAt: string; expiresInSeconds: number }> {
+  const headers = await getAuthHeaders();
+  const response = await fetch(`/api/verify/${encodeURIComponent(donationId)}/otp`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({ mode }),
+  });
+
+  const rawText = await response.text();
+  const { valid, data } = tryParseJson(rawText);
+
+  if (!valid) {
+    throw new Error(
+      `Failed to generate OTP (HTTP ${response.status}). Server returned an unexpected response.`
+    );
+  }
+
+  if (!response.ok || !data?.success || !data?.otp) {
+    const serverMsg = data?.message || data?.error || `Failed to generate OTP (HTTP ${response.status}).`;
+    throw new Error(serverMsg);
+  }
+
+  return {
+    otp: String(data.otp),
+    expiresAt: String(data.expiresAt),
+    expiresInSeconds: Number(data.expiresInSeconds || 600),
+  };
 }
 
 export async function verifyPickupWithToken(
@@ -68,14 +95,7 @@ export async function verifyPickupWithToken(
   volunteerName: string
 ): Promise<{ success: boolean; message: string }> {
   try {
-    const idToken = await auth.currentUser?.getIdToken();
-    const headers: Record<string, string> = {
-      'Content-Type': 'application/json',
-    };
-    if (idToken) {
-      headers['Authorization'] = `Bearer ${idToken}`;
-    }
-
+    const headers = await getAuthHeaders();
     const response = await fetch('/api/verify/pickup', {
       method: 'POST',
       headers,
@@ -87,22 +107,31 @@ export async function verifyPickupWithToken(
       }),
     });
 
-    const data = await response.json().catch(() => ({}));
-    if (response.ok && data.success) {
+    const rawText = await response.text();
+    const { valid, data } = tryParseJson(rawText);
+
+    if (!valid) {
+      return {
+        success: false,
+        message: `Pickup verification failed (HTTP ${response.status}). Server returned an unexpected response.`,
+      };
+    }
+
+    if (response.ok && data?.success) {
       return {
         success: true,
         message: data.message || 'Pickup successfully verified! Food is now marked as in transit.',
       };
-    } else {
-      return {
-        success: false,
-        message: data.message || data.error || 'Pickup verification failed.',
-      };
     }
+
+    return {
+      success: false,
+      message: data?.message || data?.error || `Pickup verification failed (HTTP ${response.status}).`,
+    };
   } catch (error: any) {
     return {
       success: false,
-      message: error.message || 'Network error verifying pickup token.',
+      message: error?.message || 'Network error verifying pickup token.',
     };
   }
 }
@@ -114,40 +143,43 @@ export async function verifyDeliveryWithToken(
   verifierName: string
 ): Promise<{ success: boolean; message: string }> {
   try {
-    const idToken = await auth.currentUser?.getIdToken();
-    const headers: Record<string, string> = {
-      'Content-Type': 'application/json',
-    };
-    if (idToken) {
-      headers['Authorization'] = `Bearer ${idToken}`;
-    }
-
+    const headers = await getAuthHeaders();
     const response = await fetch('/api/verify/delivery', {
       method: 'POST',
       headers,
       body: JSON.stringify({
         donationId,
         tokenOrPin,
+        verifierId,
         verifierName,
       }),
     });
 
-    const data = await response.json().catch(() => ({}));
-    if (response.ok && data.success) {
+    const rawText = await response.text();
+    const { valid, data } = tryParseJson(rawText);
+
+    if (!valid) {
+      return {
+        success: false,
+        message: `Delivery verification failed (HTTP ${response.status}). Server returned an unexpected response.`,
+      };
+    }
+
+    if (response.ok && data?.success) {
       return {
         success: true,
         message: data.message || 'Delivery successfully verified! Donation marked as delivered and impact recorded.',
       };
-    } else {
-      return {
-        success: false,
-        message: data.message || data.error || 'Delivery verification failed.',
-      };
     }
+
+    return {
+      success: false,
+      message: data?.message || data?.error || `Delivery verification failed (HTTP ${response.status}).`,
+    };
   } catch (error: any) {
     return {
       success: false,
-      message: error.message || 'Network error verifying delivery token.',
+      message: error?.message || 'Network error verifying delivery token.',
     };
   }
 }

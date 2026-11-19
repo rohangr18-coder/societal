@@ -956,6 +956,7 @@ export async function clearAllNotifications(userId: string): Promise<void> {
 
 export {
   getOrCreateVerification,
+  generateVerificationOtp,
   verifyDeliveryWithToken,
   getDonationPrivateContact,
 } from './dbVerificationService';

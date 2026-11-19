@@ -258,16 +258,11 @@ service cloud.firestore {
       );
     }
 
-    // QR & PIN Verification Records
-    // Donor can read pickup verification for their donation; assigned NGO can read delivery verification;
-    // Volunteers can read neither!
-    // All writes are SERVER-ONLY (deny client writes).
+    // QR, PIN & OTP Verification Records
+    // Server-only access: deny all client reads & writes so OTP hashes/salts and handover tokens
+    // are never exposed directly in Firestore (served via authenticated /api/verify/* endpoints).
     match /verifications/{donationId} {
-      allow read: if isSignedIn() && (
-        isDonationDonor(donationId) ||
-        isDonationNgo(donationId) ||
-        isAdmin()
-      );
+      allow read: if false;
       allow write: if false; // server-only writes!
     }
   }

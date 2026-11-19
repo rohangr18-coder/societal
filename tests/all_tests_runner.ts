@@ -29,6 +29,7 @@ async function main() {
     './volunteer_qr_scanner_pickup_validation.ts',
     './volunteer_acceptance_workflow_validation.ts',
     './complete_audit_and_auth_validation.ts',
+    './otp_verification_validation.ts',
   ];
 
   for (const file of testFiles) {

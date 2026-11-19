@@ -26,7 +26,6 @@ import {
   getDonation,
   verifyPickupWithToken,
   transitionCollectionStatus,
-  getOrCreateVerification,
 } from '../services/dbService';
 
 export interface VolunteerQRScannerModalProps {
@@ -185,7 +184,9 @@ export const VolunteerQRScannerModal: React.FC<VolunteerQRScannerModalProps> = (
   const [loadingDonation, setLoadingDonation] = useState<boolean>(false);
 
   // Verification Processing State
+  const [manualOtp, setManualOtp] = useState<string>('');
   const [manualPin, setManualPin] = useState<string>('');
+  const [selectedManualDonationId, setSelectedManualDonationId] = useState<string>('');
   const [verifying, setVerifying] = useState<boolean>(false);
   const [verificationSuccess, setVerificationSuccess] = useState<string | null>(null);
   const [verificationError, setVerificationError] = useState<string | null>(null);
@@ -429,8 +430,8 @@ export const VolunteerQRScannerModal: React.FC<VolunteerQRScannerModalProps> = (
       userProfile?.displayName || currentUser.email?.split('@')[0] || 'Volunteer Courier';
 
     try {
-      // 1. Check if token or PIN is provided
-      const verificationCode = (tokenOrPinToUse || manualPin || detectedData?.token || detectedData?.pin || '').trim();
+      // 1. Check if token, OTP, or PIN is provided
+      const verificationCode = (tokenOrPinToUse || manualOtp || manualPin || detectedData?.token || detectedData?.pin || '').trim();
 
       if (verificationCode) {
         // Submit via server-side verification endpoint
@@ -448,7 +449,7 @@ export const VolunteerQRScannerModal: React.FC<VolunteerQRScannerModalProps> = (
           setVerificationError(res.message || 'Pickup verification code was rejected.');
         }
       } else {
-        setVerificationError('Please enter the 6-digit Pickup PIN shown on the donor\'s screen or scan their pickup QR code.');
+        setVerificationError('Please enter the 6-digit Pickup OTP/PIN or QR code text (PKUP-XXXXXXXX) shown on the donor\'s screen.');
       }
     } catch (err: any) {
       console.error('[VolunteerQRScanner] Error executing pickup verification:', err);
@@ -464,6 +465,7 @@ export const VolunteerQRScannerModal: React.FC<VolunteerQRScannerModalProps> = (
     setMatchedDonation(null);
     setVerificationSuccess(null);
     setVerificationError(null);
+    setManualOtp('');
     setManualPin('');
     setScanning(true);
     startCamera();
@@ -477,7 +479,10 @@ export const VolunteerQRScannerModal: React.FC<VolunteerQRScannerModalProps> = (
       setMatchedDonation(null);
       setVerificationSuccess(null);
       setVerificationError(null);
+      setManualOtp('');
       setManualPin('');
+      const eligible = donations.find((d) => ['accepted', 'scheduled'].includes(d.status));
+      setSelectedManualDonationId(eligible?.id || '');
       startCamera();
     } else {
       stopCamera();
@@ -615,10 +620,94 @@ export const VolunteerQRScannerModal: React.FC<VolunteerQRScannerModalProps> = (
                 )}
               </div>
 
+              {/* Manual 6-Digit OTP / QR Text Entry Fallback (when camera isn't used) */}
+              {donations.some((d) => ['accepted', 'scheduled'].includes(d.status)) && (
+                <form
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    const target = donations.find((d) => d.id === selectedManualDonationId);
+                    const code = (manualOtp || manualPin).trim();
+                    if (target && code) {
+                      setMatchedDonation(target);
+                      setScanning(false);
+                      stopCamera();
+                      void executePickupVerification(target, code);
+                    }
+                  }}
+                  className="bg-stone-50 border border-stone-200 rounded-2xl p-3.5 space-y-2.5"
+                >
+                  <div className="flex items-center gap-1.5 text-xs font-bold text-stone-800">
+                    <KeyRound className="w-3.5 h-3.5 text-emerald-600" />
+                    <span>Enter 6-Digit OTP or QR Code Manually</span>
+                  </div>
+                  <select
+                    value={selectedManualDonationId}
+                    onChange={(e) => setSelectedManualDonationId(e.target.value)}
+                    className="w-full px-3 py-2 text-xs bg-white border border-stone-300 rounded-xl focus:ring-2 focus:ring-emerald-500 focus:outline-hidden"
+                  >
+                    {donations
+                      .filter((d) => ['accepted', 'scheduled'].includes(d.status))
+                      .map((d) => (
+                        <option key={d.id} value={d.id}>
+                          {d.foodName} — {d.donorName}
+                        </option>
+                      ))}
+                  </select>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                    <input
+                      type="text"
+                      inputMode="numeric"
+                      pattern="[0-9]*"
+                      maxLength={6}
+                      value={manualOtp}
+                      onChange={(e) => {
+                        setManualOtp(e.target.value.replace(/\D/g, '').slice(0, 6));
+                        if (e.target.value) setManualPin('');
+                      }}
+                      placeholder="6-digit OTP (e.g. 482910)"
+                      className="w-full px-3 py-2 text-sm font-mono tracking-widest bg-white border border-stone-300 rounded-xl focus:ring-2 focus:ring-emerald-500 focus:outline-hidden"
+                    />
+                    <input
+                      type="text"
+                      value={manualPin}
+                      onChange={(e) => {
+                        setManualPin(e.target.value);
+                        if (e.target.value) setManualOtp('');
+                      }}
+                      placeholder="Or PKUP-XXXXXXXX / PIN"
+                      className="w-full px-3 py-2 text-xs font-mono uppercase bg-white border border-stone-300 rounded-xl focus:ring-2 focus:ring-emerald-500 focus:outline-hidden"
+                    />
+                  </div>
+                  {verificationError && (
+                    <div className="p-2.5 bg-red-50 border border-red-200 rounded-xl text-red-800 text-xs flex items-start gap-2">
+                      <AlertTriangle className="w-4 h-4 text-red-600 shrink-0 mt-0.5" />
+                      <span>{verificationError}</span>
+                    </div>
+                  )}
+                  <button
+                    type="submit"
+                    disabled={verifying || !selectedManualDonationId || !(manualOtp.length === 6 || manualPin.trim())}
+                    className="w-full py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs rounded-xl transition-colors flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50"
+                  >
+                    {verifying ? (
+                      <>
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                        <span>Verifying Pickup...</span>
+                      </>
+                    ) : (
+                      <>
+                        <PackageCheck className="w-4 h-4" />
+                        <span>Verify Pickup Code</span>
+                      </>
+                    )}
+                  </button>
+                </form>
+              )}
+
               <div className="p-3 bg-emerald-50/70 border border-emerald-200 rounded-2xl text-[11px] text-emerald-900 flex items-start gap-2">
                 <ShieldCheck className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
                 <span>
-                  <strong>Tip:</strong> Ask the donor to open the donation on their phone screen and show the Pickup Handover QR Code. The scanner will instantly detect the donation ID and trigger the pickup verification flow.
+                  <strong>Tip:</strong> Ask the donor to open the donation on their phone screen and show the Pickup Handover QR Code or 6-digit OTP.
                 </span>
               </div>
             </div>
@@ -696,26 +785,46 @@ export const VolunteerQRScannerModal: React.FC<VolunteerQRScannerModalProps> = (
 
               {/* Verification Action Form */}
               {!verificationSuccess && matchedDonation && (
-                <div className="space-y-3 pt-1">
-                  {/* Optional PIN input if donor displayed 6-digit PIN */}
+                <form
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    void executePickupVerification(matchedDonation, (manualOtp || manualPin).trim() || undefined);
+                  }}
+                  className="space-y-3 pt-1"
+                >
                   <div>
                     <label className="block text-xs font-bold text-stone-700 mb-1 flex items-center gap-1.5">
                       <KeyRound className="w-3.5 h-3.5 text-emerald-600" />
-                      <span>6-Digit Verification PIN (from Donor Screen):</span>
+                      <span>6-Digit One-Time Password (OTP):</span>
+                    </label>
+                    <input
+                      type="text"
+                      inputMode="numeric"
+                      pattern="[0-9]*"
+                      maxLength={6}
+                      value={manualOtp}
+                      onChange={(e) => setManualOtp(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                      placeholder="Enter 6-digit OTP (e.g. 482910)"
+                      className="w-full px-3.5 py-2.5 text-base font-mono tracking-[0.25em] border border-stone-300 rounded-xl focus:ring-2 focus:ring-emerald-500 focus:outline-hidden"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-bold text-stone-700 mb-1">
+                      Or QR Code Text / Backup PIN:
                     </label>
                     <input
                       type="text"
                       value={manualPin}
                       onChange={(e) => setManualPin(e.target.value)}
-                      placeholder="e.g. 123456 or leave blank for 1-tap courier pickup"
-                      className="w-full px-3.5 py-2.5 text-sm font-mono border border-stone-300 rounded-xl focus:ring-2 focus:ring-emerald-500 focus:outline-hidden"
+                      placeholder="e.g. PKUP-A87X12BC or 6-digit OTP/PIN"
+                      className="w-full px-3.5 py-2.5 text-sm font-mono uppercase border border-stone-300 rounded-xl focus:ring-2 focus:ring-emerald-500 focus:outline-hidden"
                     />
                   </div>
 
                   <button
-                    type="button"
-                    onClick={() => executePickupVerification(matchedDonation)}
-                    disabled={verifying}
+                    type="submit"
+                    disabled={verifying || !(manualOtp.length === 6 || manualPin.trim() || detectedData?.token || detectedData?.pin)}
                     className="w-full py-3 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs sm:text-sm rounded-xl shadow-xs transition-colors flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50"
                   >
                     {verifying ? (
@@ -730,7 +839,7 @@ export const VolunteerQRScannerModal: React.FC<VolunteerQRScannerModalProps> = (
                       </>
                     )}
                   </button>
-                </div>
+                </form>
               )}
 
               {/* Rescan / Reset Button */}
