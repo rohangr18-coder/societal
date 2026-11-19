@@ -33,6 +33,7 @@ import {
   getPickupWindowInfo,
   DonationCluster,
 } from '../utils/clustering';
+import { isDonationExpired } from '../utils/foodSafety';
 import { useDeviceLocation, DeviceLocation } from '../hooks/useDeviceLocation';
 import { GOOGLE_MAPS_API_KEY } from './GoogleRescueMap';
 
@@ -111,9 +112,9 @@ export const VolunteerClusterMap: React.FC<VolunteerClusterMapProps> = ({
       if (typeof d.latitude !== 'number' || typeof d.longitude !== 'number') return false;
       if (d.latitude === 0 && d.longitude === 0) return false;
 
-      // Pending pickup window check (not expired)
+      // Pending pickup window & food safety check (not expired)
       const windowInfo = getPickupWindowInfo(d);
-      if (windowInfo.isExpired) return false;
+      if (windowInfo.isExpired || isDonationExpired(d).isExpired) return false;
       if (urgentOnly && !windowInfo.isUrgent) return false;
 
       // Proximity distance filter

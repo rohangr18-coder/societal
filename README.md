@@ -135,7 +135,36 @@ npm run lint
 npm run build
 ```
 
-### 5. Multi-Device & Mobile GPS / Camera Testing
+### 5. Deploying to Vercel (Hobby & Pro) & Environment Variables
+
+#### Required & Optional Environment Variables
+Configure the following environment variables in **Vercel Project Settings → Environment Variables**:
+
+| Variable | Scope | Notes |
+|---|---|---|
+| `GEMINI_API_KEY` | Server-only | Required for Mithra AI & Gemini matching/category endpoints (graceful deterministic fallback if absent). |
+| `CRON_SECRET` | Server-only | Random secret string used to authorize `GET /api/jobs/expire-donations`. Optional in local dev / AI Studio (falls back to authenticated admin access). |
+| `FIREBASE_SERVICE_ACCOUNT_JSON` | Server-only | Full Firebase Admin service account JSON **pasted on a single line**. Optional in AI Studio / GCP (falls back to Application Default Credentials / projectId). |
+| `VITE_FIREBASE_API_KEY` | Client (Vite) | Firebase Web App API key. |
+| `VITE_FIREBASE_AUTH_DOMAIN` | Client (Vite) | Firebase Auth domain (`<project-id>.firebaseapp.com`). |
+| `VITE_FIREBASE_PROJECT_ID` | Client (Vite) | Firebase project ID. |
+| `VITE_FIREBASE_STORAGE_BUCKET` | Client (Vite) | Firebase storage bucket. |
+| `VITE_FIREBASE_MESSAGING_SENDER_ID` | Client (Vite) | Firebase Cloud Messaging sender ID. |
+| `VITE_FIREBASE_APP_ID` | Client (Vite) | Firebase Web App ID. |
+| `VITE_FIREBASE_FIRESTORE_DATABASE_ID` | Client (Vite) | Dedicated Firestore named database ID. |
+| `VITE_FIREBASE_VAPID_KEY` | Client (Vite) | Optional Web Push VAPID key for FCM notifications. |
+| `VITE_GOOGLE_MAPS_API_KEY` | Client (Vite) | Restricted Google Maps Platform key (Maps JS, Places, Geocoding, Routes). |
+
+#### Scheduled Food-Safety Expiration Job (Vercel Hobby vs. External Cron)
+- On **Vercel Hobby** accounts, cron jobs in `vercel.json` are limited to **once per day** (`"schedule": "0 0 * * *"` calling `/api/jobs/expire-donations`).
+- Because food safety requires immediate enforcement, ResQBite also evaluates `isDonationExpired(...)` **immediately on read** across all donation listings, detail modals, maps, and server verification endpoints (`/api/verify/pickup`, `/api/donations/accept-volunteer`), automatically hiding or marking expired food and blocking claims, acceptances, and pickups.
+- For faster background Firestore status cleanup & donor expiration notifications (e.g., every 15 minutes), configure a free external cron service such as [cron-job.org](https://cron-job.org/) to send:
+  ```http
+  GET https://<your-vercel-domain>/api/jobs/expire-donations
+  Authorization: Bearer <CRON_SECRET>
+  ```
+
+### 6. Multi-Device & Mobile GPS / Camera Testing
 1. **HTTPS Requirement**: Modern browsers only grant Geolocation and Camera access over HTTPS or `localhost`.
 2. **Testing on Android**:
    - Open Chrome on Android and visit the hosted URL.

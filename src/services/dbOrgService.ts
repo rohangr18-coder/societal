@@ -156,7 +156,17 @@ export async function getVolunteerProfile(userId: string): Promise<VolunteerProf
       return { id: snap.id, ...snap.data() } as VolunteerProfile;
     }
     return null;
-  } catch (error) {
+  } catch (error: any) {
+    const msg = error?.message || String(error);
+    if (
+      msg.includes('the client is offline') ||
+      msg.includes('offline') ||
+      msg.includes('unavailable') ||
+      msg.includes('permission-denied')
+    ) {
+      console.warn(`[dbOrgService] Volunteer profile lookup notice for ${path}:`, msg);
+      return null;
+    }
     handleFirestoreError(error, OperationType.GET, path);
     return null;
   }

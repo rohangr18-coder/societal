@@ -48,6 +48,7 @@ import {
   subscribeNotifications,
 } from '../services/dbService';
 import { calculateDistanceKm, calculateDistanceKmSafe } from '../utils/geo';
+import { isDonationExpired as checkFoodSafetyExpired } from '../utils/foodSafety';
 import { LiveTrackingMap } from './LiveTrackingMap';
 import { VolunteerNotificationsSlideOver } from './VolunteerNotificationsSlideOver';
 import { VolunteerClusterMap } from './VolunteerClusterMap';
@@ -211,6 +212,9 @@ export const VolunteerView: React.FC<VolunteerViewProps> = ({
           }
         }
       })
+      .catch((profileErr) => {
+        console.warn('[VolunteerView] Profile lookup notice:', profileErr);
+      })
       .finally(() => setLoadingProfile(false));
   }, [currentUser]);
 
@@ -355,6 +359,14 @@ export const VolunteerView: React.FC<VolunteerViewProps> = ({
       return;
     }
 
+    if (isDonationExpired(donation)) {
+      setActionMessage({
+        type: 'error',
+        text: 'Food Safety Alert: This donation has passed its safe consumption deadline and can no longer be accepted.',
+      });
+      return;
+    }
+
     setClaimingDonationId(donation.id);
     setActionMessage(null);
 
@@ -444,6 +456,13 @@ export const VolunteerView: React.FC<VolunteerViewProps> = ({
     if (!currentUser) return;
 
     if (nextStatus === 'picked_up') {
+      if (isDonationExpired(donation)) {
+        setActionMessage({
+          type: 'error',
+          text: 'Food Safety Alert: This donation has expired and cannot be picked up.',
+        });
+        return;
+      }
       setScannerOpen(true);
       return;
     }
@@ -489,14 +508,11 @@ export const VolunteerView: React.FC<VolunteerViewProps> = ({
   const volLat = volunteerCoords?.lat || 28.6139;
   const volLng = volunteerCoords?.lng || 77.209;
 
-  // Time-aware helpers for accurate pickup scheduling & deadline countdown
-  const isDonationExpired = (d: Donation): boolean => {
-    if (d.status === 'expired') return true;
-    const deadline = d.collectionDeadline || d.pickupDeadline;
-    if (!deadline) return false;
-    const t = new Date(deadline).getTime();
-    return !isNaN(t) && t < Date.now();
-  };
+  // Time-aware helpers using centralized food-safety expiration evaluation
+  const isDonationExpired = (d: Donation): boolean =>
+    d.status === 'expired' ||
+    (['available', 'requested', 'accepted', 'scheduled'].includes(d.status) &&
+      checkFoodSafetyExpired(d).isExpired);
 
   const getRemainingTimeInfo = (d: Donation) => {
     const deadline = d.collectionDeadline || d.pickupDeadline;

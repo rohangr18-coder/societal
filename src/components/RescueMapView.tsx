@@ -10,6 +10,7 @@ import {
 import { Donation } from '../types';
 import { GoogleRescueMap } from './GoogleRescueMap';
 import { calculateDistanceKm } from '../utils/geo';
+import { isDonationExpired } from '../utils/foodSafety';
 import { DeviceLocation } from '../hooks/useDeviceLocation';
 import { Navigation, ExternalLink } from 'lucide-react';
 
@@ -28,9 +29,19 @@ export const RescueMapView: React.FC<RescueMapViewProps> = ({
   const [selectedDonation, setSelectedDonation] = useState<Donation | null>(null);
   const [userLocation, setUserLocation] = useState<DeviceLocation | null>(null);
 
+  const isExpiredItem = (d: Donation): boolean =>
+    d.status === 'expired' ||
+    (['available', 'requested', 'accepted', 'scheduled'].includes(d.status) &&
+      isDonationExpired(d).isExpired);
+
   const visibleDonations = donations.filter((d) => {
-    if (filter === 'available') return d.status === 'available';
-    if (filter === 'active') return ['available', 'requested', 'accepted', 'scheduled', 'picked_up'].includes(d.status);
+    if (filter === 'available') return d.status === 'available' && !isExpiredItem(d);
+    if (filter === 'active') {
+      return (
+        ['available', 'requested', 'accepted', 'scheduled', 'picked_up'].includes(d.status) &&
+        !isExpiredItem(d)
+      );
+    }
     return true;
   });
 
@@ -64,7 +75,7 @@ export const RescueMapView: React.FC<RescueMapViewProps> = ({
                 filter === 'available' ? 'bg-white text-emerald-800 shadow-2xs font-bold' : 'text-stone-600'
               }`}
             >
-              Available ({donations.filter((d) => d.status === 'available').length})
+              Available ({donations.filter((d) => d.status === 'available' && !isExpiredItem(d)).length})
             </button>
             <button
               onClick={() => setFilter('active')}
@@ -72,7 +83,7 @@ export const RescueMapView: React.FC<RescueMapViewProps> = ({
                 filter === 'active' ? 'bg-white text-emerald-800 shadow-2xs font-bold' : 'text-stone-600'
               }`}
             >
-              In Motion ({donations.filter((d) => ['requested', 'accepted', 'scheduled', 'picked_up'].includes(d.status)).length})
+              In Motion ({donations.filter((d) => ['requested', 'accepted', 'scheduled', 'picked_up'].includes(d.status) && !isExpiredItem(d)).length})
             </button>
             <button
               onClick={() => setFilter('all')}
@@ -116,8 +127,12 @@ export const RescueMapView: React.FC<RescueMapViewProps> = ({
                 <span className="text-[11px] font-bold text-emerald-800 bg-emerald-50 px-2.5 py-0.5 rounded-full uppercase">
                   {selectedDonation.category}
                 </span>
-                <span className="text-[10px] font-bold uppercase tracking-wider text-orange-600">
-                  {selectedDonation.status.replace('_', ' ')}
+                <span
+                  className={`text-[10px] font-bold uppercase tracking-wider ${
+                    isExpiredItem(selectedDonation) ? 'text-red-700 bg-red-100 px-2 py-0.5 rounded-full' : 'text-orange-600'
+                  }`}
+                >
+                  {isExpiredItem(selectedDonation) ? 'Expired' : selectedDonation.status.replace('_', ' ')}
                 </span>
               </div>
 
@@ -175,9 +190,13 @@ export const RescueMapView: React.FC<RescueMapViewProps> = ({
 
                 <button
                   onClick={() => onSelectDonation(selectedDonation)}
-                  className="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs py-2.5 rounded-xl transition-colors cursor-pointer"
+                  className={`w-full font-bold text-xs py-2.5 rounded-xl transition-colors cursor-pointer ${
+                    isExpiredItem(selectedDonation)
+                      ? 'bg-stone-200 hover:bg-stone-300 text-stone-700'
+                      : 'bg-emerald-600 hover:bg-emerald-700 text-white'
+                  }`}
                 >
-                  Inspect & Claim Listing →
+                  {isExpiredItem(selectedDonation) ? 'View Expired Listing →' : 'Inspect & Claim Listing →'}
                 </button>
               </div>
             </div>

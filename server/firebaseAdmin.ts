@@ -9,6 +9,7 @@ export const DEFAULT_APPLET_DATABASE_ID = 'ai-studio-3944ed17-9bc7-40a0-9e59-d94
 
 let adminAppInstance: App | null = null;
 let cachedConfig: Record<string, any> | null = null;
+let warnedMissingServiceAccount = false;
 
 function readAppletConfig(): Record<string, any> {
   if (cachedConfig) return cachedConfig;
@@ -74,9 +75,11 @@ export function getAdminApp(): App {
     appletConfig.projectId ||
     DEFAULT_APPLET_PROJECT_ID;
 
+  const serviceAccountJson = process.env.FIREBASE_SERVICE_ACCOUNT_JSON?.trim();
+
   try {
-    if (process.env.FIREBASE_SERVICE_ACCOUNT_JSON) {
-      let parsedServiceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_JSON);
+    if (serviceAccountJson) {
+      let parsedServiceAccount = JSON.parse(serviceAccountJson);
       if (parsedServiceAccount.private_key && typeof parsedServiceAccount.private_key === 'string') {
         parsedServiceAccount.private_key = parsedServiceAccount.private_key.replace(/\\n/g, '\n');
       }
@@ -85,6 +88,13 @@ export function getAdminApp(): App {
         projectId,
       });
       return adminAppInstance;
+    }
+
+    if (!warnedMissingServiceAccount && process.env.NODE_ENV !== 'test') {
+      warnedMissingServiceAccount = true;
+      console.warn(
+        '[firebaseAdmin] FIREBASE_SERVICE_ACCOUNT_JSON is not set; falling back to Application Default Credentials / projectId.'
+      );
     }
 
     try {

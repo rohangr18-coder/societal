@@ -32,6 +32,7 @@ import { Donation } from '../types';
 import { GoogleRescueMap } from './GoogleRescueMap';
 import { calculateDistanceKm } from '../utils/geo';
 import { getPickupWindowInfo } from '../utils/clustering';
+import { isDonationExpired } from '../utils/foodSafety';
 import { useDeviceLocation, DeviceLocation } from '../hooks/useDeviceLocation';
 
 export interface BrowseDonationsViewProps {
@@ -203,11 +204,16 @@ export const BrowseDonationsView: React.FC<BrowseDonationsViewProps> = ({
     };
   }, [donations]);
 
+  const isExpiredDonation = (d: Donation): boolean =>
+    d.status === 'expired' ||
+    (['available', 'requested', 'accepted', 'scheduled'].includes(d.status) &&
+      isDonationExpired(d).isExpired);
+
   // Filtered donations list
   const filteredDonations = useMemo(() => {
     return donations.filter((d) => {
-      // 1. Status Filter
-      if (statusFilter === 'available' && d.status !== 'available') {
+      // 1. Status Filter (hide expired items immediately when viewing available listings)
+      if (statusFilter === 'available' && (d.status !== 'available' || isExpiredDonation(d))) {
         return false;
       }
 
@@ -916,6 +922,7 @@ export const BrowseDonationsView: React.FC<BrowseDonationsViewProps> = ({
                 <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-5">
                   {filteredDonations.map((item) => {
                     const pickupInfo = getPickupWindowInfo(item);
+                    const itemExpired = isExpiredDonation(item);
                     const distanceKm =
                       activeLocation && item.latitude && item.longitude
                         ? calculateDistanceKm(
@@ -930,7 +937,11 @@ export const BrowseDonationsView: React.FC<BrowseDonationsViewProps> = ({
                       <div
                         key={item.id}
                         onClick={() => onSelectDonation(item)}
-                        className="bg-white rounded-3xl border border-stone-200/90 p-5 shadow-2xs hover:shadow-md transition-all cursor-pointer flex flex-col justify-between group space-y-4 hover:border-emerald-300"
+                        className={`bg-white rounded-3xl border p-5 shadow-2xs hover:shadow-md transition-all cursor-pointer flex flex-col justify-between group space-y-4 ${
+                          itemExpired
+                            ? 'border-red-200/80 opacity-80 hover:border-red-300'
+                            : 'border-stone-200/90 hover:border-emerald-300'
+                        }`}
                       >
                         <div className="space-y-3">
                           {/* Top Badges */}
@@ -941,7 +952,7 @@ export const BrowseDonationsView: React.FC<BrowseDonationsViewProps> = ({
                             </span>
 
                             <div className="flex items-center gap-1.5">
-                              {pickupInfo.isUrgent && (
+                              {!itemExpired && pickupInfo.isUrgent && (
                                 <span className="text-[10px] font-extrabold uppercase tracking-wider px-2 py-0.5 rounded-md bg-rose-100 text-rose-800 flex items-center gap-1">
                                   <Flame className="w-3 h-3 text-rose-600" />
                                   Urgent
@@ -949,14 +960,16 @@ export const BrowseDonationsView: React.FC<BrowseDonationsViewProps> = ({
                               )}
                               <span
                                 className={`text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-md ${
-                                  item.status === 'available'
+                                  itemExpired
+                                    ? 'bg-red-100 text-red-800'
+                                    : item.status === 'available'
                                     ? 'bg-emerald-100 text-emerald-800'
                                     : item.status === 'requested' || item.status === 'accepted'
                                     ? 'bg-amber-100 text-amber-800'
                                     : 'bg-stone-100 text-stone-700'
                                 }`}
                               >
-                                {item.status.replace('_', ' ')}
+                                {itemExpired ? 'Expired' : item.status.replace('_', ' ')}
                               </span>
                             </div>
                           </div>
@@ -984,14 +997,16 @@ export const BrowseDonationsView: React.FC<BrowseDonationsViewProps> = ({
                               <span className="text-[10px] text-stone-400 block font-medium">Pickup Window</span>
                               <span
                                 className={`font-bold truncate block ${
-                                  pickupInfo.isUrgent
+                                  itemExpired
+                                    ? 'text-red-700'
+                                    : pickupInfo.isUrgent
                                     ? 'text-rose-600'
                                     : pickupInfo.isPending
                                     ? 'text-amber-700'
                                     : 'text-stone-700'
                                 }`}
                               >
-                                {pickupInfo.label}
+                                {itemExpired ? 'Expired' : pickupInfo.label}
                               </span>
                             </div>
                           </div>

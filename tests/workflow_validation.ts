@@ -283,11 +283,19 @@ function runTests() {
   assert(Boolean(vercelConfig.rewrites), 'vercel.json has rewrites defined');
   const apiRewrite = vercelConfig.rewrites.find((r: any) => r.source === '/api/(.*)');
   assert(Boolean(apiRewrite), 'API routes explicitly preserved with dedicated rewrite rule');
-  assert(apiRewrite?.destination === '/api/$1', 'API routes forward to /api/$1 instead of index.html');
+  assert(apiRewrite?.destination === '/api', 'API routes forward to /api instead of index.html');
 
   const spaRewrite = vercelConfig.rewrites.find((r: any) => r.destination === '/index.html');
   assert(Boolean(spaRewrite), 'SPA fallback rewrite to /index.html is configured');
   assert(spaRewrite?.source.includes('api'), 'SPA fallback excludes /api routes from being rewritten to HTML');
+
+  assert(
+    Array.isArray(vercelConfig.crons) &&
+      vercelConfig.crons.length === 1 &&
+      vercelConfig.crons[0].path === '/api/jobs/expire-donations' &&
+      vercelConfig.crons[0].schedule === '0 0 * * *',
+    'vercel.json configures Hobby-compatible daily cron for /api/jobs/expire-donations'
+  );
 
   assert(Boolean(vercelConfig.functions?.['api/**']?.includeFiles), 'vercel.json explicitly bundles server/** files for serverless execution');
 

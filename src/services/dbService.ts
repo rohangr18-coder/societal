@@ -104,8 +104,19 @@ export async function getDonation(donationId: string): Promise<Donation | null> 
     const snap = await getDoc(donationRef);
     if (!snap.exists()) return null;
     return { id: snap.id, ...snap.data() } as Donation;
-  } catch (error) {
+  } catch (error: any) {
+    const msg = error?.message || String(error);
+    if (
+      msg.includes('the client is offline') ||
+      msg.includes('offline') ||
+      msg.includes('unavailable') ||
+      msg.includes('permission-denied')
+    ) {
+      console.warn(`[dbService] Donation lookup notice for ${path}:`, msg);
+      return null;
+    }
     handleFirestoreError(error, OperationType.GET, path);
+    return null;
   }
 }
 

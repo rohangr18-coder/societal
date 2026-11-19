@@ -9,9 +9,11 @@ import {
   MapPin,
   Building2,
   ExternalLink,
+  AlertTriangle,
 } from 'lucide-react';
 import { Donation, DonationStatus } from '../../types';
 import { LiveTrackingMap } from '../LiveTrackingMap';
+import { isDonationExpired } from '../../utils/foodSafety';
 
 export interface ActiveCollectionCardProps {
   donation: Donation;
@@ -30,14 +32,22 @@ export const ActiveCollectionCard: React.FC<ActiveCollectionCardProps> = ({
   onScanDelivery,
   onTransitionStatus,
 }) => {
+  const isExpired =
+    donation.status === 'expired' ||
+    (['accepted', 'scheduled'].includes(donation.status) && isDonationExpired(donation).isExpired);
+
   return (
-    <div className="bg-white rounded-3xl border border-emerald-200 shadow-md p-6 sm:p-8 space-y-6">
+    <div className={`bg-white rounded-3xl border shadow-md p-6 sm:p-8 space-y-6 ${isExpired ? 'border-red-200' : 'border-emerald-200'}`}>
       {/* Active Header & Stepper */}
       <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 pb-6 border-b border-stone-100">
         <div>
-          <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full text-xs font-bold bg-emerald-100 text-emerald-800 mb-2">
-            <Radio className="w-3.5 h-3.5 text-emerald-600 animate-pulse" />
-            <span>Collection Mission in Progress</span>
+          <div className={`inline-flex items-center gap-2 px-3 py-1 rounded-full text-xs font-bold mb-2 ${isExpired ? 'bg-red-100 text-red-800' : 'bg-emerald-100 text-emerald-800'}`}>
+            {isExpired ? (
+              <AlertTriangle className="w-3.5 h-3.5 text-red-600" />
+            ) : (
+              <Radio className="w-3.5 h-3.5 text-emerald-600 animate-pulse" />
+            )}
+            <span>{isExpired ? 'Expired — Pickup Blocked for Food Safety' : 'Collection Mission in Progress'}</span>
           </div>
           <h2 className="text-xl sm:text-2xl font-black text-stone-900">
             {donation.foodName}
@@ -106,11 +116,20 @@ export const ActiveCollectionCard: React.FC<ActiveCollectionCardProps> = ({
       <div className="bg-stone-50 p-4 rounded-2xl border border-stone-200 flex flex-wrap items-center justify-between gap-4">
         <div className="text-xs text-stone-600">
           <span className="font-bold text-stone-900">Current Status:</span>{' '}
-          <span className="uppercase text-emerald-700 font-bold">{donation.status.replace('_', ' ')}</span>
+          <span className={`uppercase font-bold ${isExpired ? 'text-red-700' : 'text-emerald-700'}`}>
+            {isExpired ? 'EXPIRED' : donation.status.replace('_', ' ')}
+          </span>
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
-          {['accepted', 'scheduled'].includes(donation.status) && (
+          {isExpired && ['accepted', 'scheduled'].includes(donation.status) && (
+            <div className="inline-flex items-center gap-2 px-3.5 py-2 rounded-xl bg-red-100 border border-red-200 text-red-800 text-xs font-bold">
+              <AlertTriangle className="w-4 h-4 text-red-600 shrink-0" />
+              <span>Expired — Food Safety Guard blocks pickup. Please cancel this assignment.</span>
+            </div>
+          )}
+
+          {!isExpired && ['accepted', 'scheduled'].includes(donation.status) && (
             <>
               <button
                 onClick={() => onScanPickup(donation)}

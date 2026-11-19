@@ -2,9 +2,9 @@
   "buildCommand": "npm run build",
   "outputDirectory": "dist",
   "functions": { "api/**": { "includeFiles": "server/**" } },
-  "crons": [{ "path": "/api/jobs/expire-donations", "schedule": "*/15 * * * *" }],
+  "crons": [{ "path": "/api/jobs/expire-donations", "schedule": "0 0 * * *" }],
   "rewrites": [
-    { "source": "/api/(.*)", "destination": "/api/$1" },
+    { "source": "/api/(.*)", "destination": "/api" },
     { "source": "/((?!api/).*)", "destination": "/index.html" }
   ]
 }

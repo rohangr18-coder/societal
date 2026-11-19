@@ -23,6 +23,7 @@ import {
 } from 'lucide-react';
 import { Donation } from '../types';
 import { calculateDistanceKm } from '../utils/geo';
+import { isDonationExpired } from '../utils/foodSafety';
 import { useDeviceLocation, DeviceLocation } from '../hooks/useDeviceLocation';
 
 export const GOOGLE_MAPS_API_KEY =
@@ -392,12 +393,17 @@ export const GoogleRescueMap: React.FC<GoogleRescueMapProps> = ({
             {donations.map((donation) => {
               if (!donation.latitude || !donation.longitude) return null;
 
-              const isAvailable = donation.status === 'available';
-              const isClaimed = donation.status === 'requested' || donation.status === 'accepted';
-              const isInTransit = donation.status === 'scheduled' || donation.status === 'picked_up';
-              const isDelivered = donation.status === 'delivered';
+              const isExpired =
+                donation.status === 'expired' ||
+                (['available', 'requested', 'accepted', 'scheduled'].includes(donation.status) &&
+                  isDonationExpired(donation).isExpired);
+              const isAvailable = !isExpired && donation.status === 'available';
+              const isClaimed = !isExpired && (donation.status === 'requested' || donation.status === 'accepted');
+              const isInTransit = !isExpired && (donation.status === 'scheduled' || donation.status === 'picked_up');
 
-              const pinBg = isAvailable
+              const pinBg = isExpired
+                ? '#64748b' // Gray (Expired)
+                : isAvailable
                 ? '#059669' // Green
                 : isClaimed
                 ? '#d97706' // Amber
@@ -405,13 +411,13 @@ export const GoogleRescueMap: React.FC<GoogleRescueMapProps> = ({
                 ? '#2563eb' // Blue
                 : '#64748b'; // Gray
 
-              const glyph = isAvailable ? '🍲' : isClaimed ? '⏳' : isInTransit ? '🚲' : '✓';
+              const glyph = isExpired ? '⏱' : isAvailable ? '🍲' : isClaimed ? '⏳' : isInTransit ? '🚲' : '✓';
 
               return (
                 <AdvancedMarker
                   key={donation.id}
                   position={{ lat: donation.latitude, lng: donation.longitude }}
-                  title={`${donation.foodName} (${donation.status})`}
+                  title={`${donation.foodName} (${isExpired ? 'expired' : donation.status})`}
                   onClick={() => {
                     setSelectedDonation(donation);
                     if (onSelectDonation) {
@@ -432,7 +438,12 @@ export const GoogleRescueMap: React.FC<GoogleRescueMapProps> = ({
             })}
 
             {/* INFO WINDOW FOR SELECTED DONATION */}
-            {selectedDonation && selectedDonation.latitude && selectedDonation.longitude && (
+            {selectedDonation && selectedDonation.latitude && selectedDonation.longitude && (() => {
+              const selectedIsExpired =
+                selectedDonation.status === 'expired' ||
+                (['available', 'requested', 'accepted', 'scheduled'].includes(selectedDonation.status) &&
+                  isDonationExpired(selectedDonation).isExpired);
+              return (
               <InfoWindow
                 position={{ lat: selectedDonation.latitude, lng: selectedDonation.longitude }}
                 onCloseClick={() => setSelectedDonation(null)}
@@ -442,8 +453,12 @@ export const GoogleRescueMap: React.FC<GoogleRescueMapProps> = ({
                     <span className="text-[10px] font-bold uppercase tracking-wider text-emerald-800 bg-emerald-50 px-2 py-0.5 rounded-full">
                       {selectedDonation.category}
                     </span>
-                    <span className="text-[10px] font-bold text-orange-600 uppercase">
-                      {selectedDonation.status.replace('_', ' ')}
+                    <span
+                      className={`text-[10px] font-bold uppercase ${
+                        selectedIsExpired ? 'text-red-700 bg-red-100 px-1.5 py-0.5 rounded-full' : 'text-orange-600'
+                      }`}
+                    >
+                      {selectedIsExpired ? 'Expired' : selectedDonation.status.replace('_', ' ')}
                     </span>
                   </div>
 
@@ -506,7 +521,8 @@ export const GoogleRescueMap: React.FC<GoogleRescueMapProps> = ({
                   </div>
                 </div>
               </InfoWindow>
-            )}
+              );
+            })()}
           </Map>
         </div>
       </APIProvider>

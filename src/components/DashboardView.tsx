@@ -17,6 +17,7 @@ import {
 import { useAuth } from '../context/AuthContext';
 import { Donation, DonationStatus, UserRole } from '../types';
 import { updateDonationStatus } from '../services/dbService';
+import { isDonationExpired } from '../utils/foodSafety';
 
 interface DashboardViewProps {
   donations: Donation[];
@@ -38,26 +39,44 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   const [activeRoleView, setActiveRoleView] = useState<UserRole>(currentRole);
   const [actionLoading, setActionLoading] = useState(false);
 
+  const isExpiredItem = (d: Donation): boolean =>
+    d.status === 'expired' ||
+    (['available', 'requested', 'accepted', 'scheduled'].includes(d.status) &&
+      isDonationExpired(d).isExpired);
+
   // Filter donations for each perspective
   const donorDonations = donations.filter((d) => d.donorId === currentUser?.uid);
-  const pendingRequestsForDonor = donorDonations.filter((d) => d.status === 'requested');
-  const activeDonorRescues = donorDonations.filter((d) =>
-    ['available', 'requested', 'accepted', 'scheduled', 'picked_up'].includes(d.status)
+  const pendingRequestsForDonor = donorDonations.filter(
+    (d) => d.status === 'requested' && !isExpiredItem(d)
+  );
+  const activeDonorRescues = donorDonations.filter(
+    (d) =>
+      ['available', 'requested', 'accepted', 'scheduled', 'picked_up'].includes(d.status) &&
+      !isExpiredItem(d)
   );
 
   const ngoClaimedDonations = donations.filter((d) => d.assignedNgoId === currentUser?.uid);
   const volunteerAssignedDonations = donations.filter((d) => d.assignedVolunteerId === currentUser?.uid);
 
+  const [dashboardError, setDashboardError] = useState<string | null>(null);
+
   // Quick accept or reject from dashboard
   const handleQuickStatus = async (donation: Donation, newStatus: DonationStatus, note: string) => {
     if (!currentUser) return;
+    setDashboardError(null);
+    if (newStatus !== 'cancelled' && isExpiredItem(donation)) {
+      setDashboardError(
+        `Food Safety Guard: "${donation.foodName}" has expired and can no longer be accepted or re-opened.`
+      );
+      return;
+    }
     setActionLoading(true);
     try {
       const actorName = userProfile?.displayName || 'User';
       const extra = newStatus === 'available' ? { assignedNgoId: '', assignedNgoName: '', claimLock: '' } : undefined;
       await updateDonationStatus(donation.id, newStatus, actorName, currentUser.uid, note, extra);
     } catch (err: any) {
-      alert(`Error updating status: ${err.message}`);
+      setDashboardError(`Error updating status: ${err.message}`);
     } finally {
       setActionLoading(false);
     }
@@ -116,6 +135,21 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           </button>
         </div>
       </div>
+
+      {dashboardError && (
+        <div className="p-4 rounded-2xl bg-red-50 border border-red-200 text-red-800 text-xs font-semibold flex items-center justify-between gap-3">
+          <div className="flex items-center gap-2">
+            <AlertTriangle className="w-4 h-4 text-red-600 shrink-0" />
+            <span>{dashboardError}</span>
+          </div>
+          <button
+            onClick={() => setDashboardError(null)}
+            className="text-red-700 hover:text-red-900 font-bold uppercase cursor-pointer"
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
 
       {/* ========================================================= */}
       {/* DONOR DASHBOARD VIEW */}
@@ -225,8 +259,14 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                       <div className="flex items-center gap-2">
                         <span className="font-bold text-stone-900 text-sm">{d.foodName}</span>
                         <span className="text-xs text-stone-500">({d.quantity} {d.unit})</span>
-                        <span className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-800">
-                          {d.status.replace('_', ' ')}
+                        <span
+                          className={`text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full ${
+                            isExpiredItem(d)
+                              ? 'bg-red-100 text-red-800'
+                              : 'bg-emerald-50 text-emerald-800'
+                          }`}
+                        >
+                          {isExpiredItem(d) ? 'Expired' : d.status.replace('_', ' ')}
                         </span>
                       </div>
                       <div className="text-xs text-stone-500 flex items-center gap-3">
@@ -267,7 +307,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
             <div className="bg-white p-5 rounded-2xl border border-stone-200 shadow-2xs">
               <span className="text-xs text-stone-500 font-medium block">Available in City</span>
               <span className="text-3xl font-extrabold text-emerald-700 mt-1 block">
-                {donations.filter((d) => d.status === 'available').length}
+                {donations.filter((d) => d.status === 'available' && !isExpiredItem(d)).length}
               </span>
             </div>
             <div className="bg-white p-5 rounded-2xl border border-stone-200 shadow-2xs">
@@ -319,8 +359,14 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                       </p>
                     </div>
                     <div className="flex items-center gap-3">
-                      <span className="text-xs font-bold uppercase tracking-wider text-orange-700 bg-orange-50 px-2.5 py-1 rounded-full">
-                        {d.status.replace('_', ' ')}
+                      <span
+                        className={`text-xs font-bold uppercase tracking-wider px-2.5 py-1 rounded-full ${
+                          isExpiredItem(d)
+                            ? 'text-red-800 bg-red-100'
+                            : 'text-orange-700 bg-orange-50'
+                        }`}
+                      >
+                        {isExpiredItem(d) ? 'Expired' : d.status.replace('_', ' ')}
                       </span>
                       <span className="text-xs font-bold text-emerald-700">Track Progress →</span>
                     </div>
@@ -390,8 +436,14 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                       </p>
                     </div>
                     <div className="flex items-center gap-2">
-                      <span className="text-xs font-bold text-blue-700 bg-blue-50 px-3 py-1 rounded-full uppercase">
-                        {d.status.replace('_', ' ')}
+                      <span
+                        className={`text-xs font-bold px-3 py-1 rounded-full uppercase ${
+                          isExpiredItem(d)
+                            ? 'text-red-800 bg-red-100'
+                            : 'text-blue-700 bg-blue-50'
+                        }`}
+                      >
+                        {isExpiredItem(d) ? 'Expired' : d.status.replace('_', ' ')}
                       </span>
                       <span className="text-xs font-bold text-emerald-700">Open Mission →</span>
                     </div>

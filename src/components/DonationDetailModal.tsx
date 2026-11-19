@@ -64,11 +64,18 @@ export const DonationDetailModal: React.FC<DonationDetailModalProps> = ({ donati
 
   // Food safety expiration evaluation
   const expirationCheck = isDonationExpired(donation);
-  const isExpired = donation.status === 'expired' || expirationCheck.isExpired;
+  const isExpired =
+    donation.status === 'expired' ||
+    (['available', 'requested', 'accepted', 'scheduled'].includes(donation.status) &&
+      expirationCheck.isExpired);
 
   // Handle NGO Claim with transactional duplicate-prevention
   const handleNgoClaim = async () => {
     if (!currentUser) return;
+    if (isExpired) {
+      setErrorMsg('Food Safety Guard: Item has expired and can no longer be claimed.');
+      return;
+    }
     setLoadingAction(true);
     setErrorMsg(null);
     setSuccessMsg(null);
@@ -98,6 +105,10 @@ export const DonationDetailModal: React.FC<DonationDetailModalProps> = ({ donati
   // Status transitions
   const handleStatusChange = async (nextStatus: DonationStatus, note?: string, extra?: Partial<Donation>) => {
     if (!currentUser) return;
+    if (isExpired && nextStatus !== 'cancelled') {
+      setErrorMsg('Food Safety Guard: This donation has expired and cannot be accepted or picked up.');
+      return;
+    }
     setLoadingAction(true);
     setErrorMsg(null);
     setSuccessMsg(null);
@@ -166,7 +177,7 @@ export const DonationDetailModal: React.FC<DonationDetailModalProps> = ({ donati
         {/* Header */}
         <div className="px-6 py-4 border-b border-stone-100 flex items-center justify-between bg-stone-50/60">
           <div className="flex items-center gap-3">
-            {getStatusBadge(donation.status)}
+            {getStatusBadge(isExpired ? 'expired' : donation.status)}
             <span className="text-xs text-stone-500 font-mono">ID: {donation.id.slice(0, 8)}</span>
           </div>
           <button
@@ -413,8 +424,8 @@ export const DonationDetailModal: React.FC<DonationDetailModalProps> = ({ donati
                 </button>
               )}
 
-              {/* QR Code Handover Buttons */}
-              {['accepted', 'scheduled'].includes(donation.status) && (
+              {/* QR Code Handover Buttons (blocked when expired) */}
+              {!isExpired && ['accepted', 'scheduled'].includes(donation.status) && (
                 <>
                   {(isOwner || isAdmin) && (
                     <button
@@ -516,7 +527,7 @@ export const DonationDetailModal: React.FC<DonationDetailModalProps> = ({ donati
                 className="flex items-center gap-2 px-3.5 py-2 rounded-xl bg-red-100 text-red-900 border border-red-300 text-xs font-bold shadow-xs"
               >
                 <AlertTriangle className="w-4 h-4 text-red-600 shrink-0" />
-                <span>Food Safety Guard: Item has expired and can no longer be claimed.</span>
+                <span>Food Safety Guard: Item has expired and can no longer be claimed, accepted, or picked up.</span>
               </div>
             ) : (
               <>
@@ -531,71 +542,71 @@ export const DonationDetailModal: React.FC<DonationDetailModalProps> = ({ donati
                     Claim / Request for My NGO
                   </button>
                 )}
-              </>
-            )}
 
-            {/* Donor Accept Request */}
-            {donation.status === 'requested' && (isOwner || isAdmin) && (
-              <>
-                <button
-                  onClick={() =>
-                    handleStatusChange(
-                      'accepted',
-                      'Donor accepted NGO request. Awaiting pickup dispatch.'
-                    )
-                  }
-                  disabled={loadingAction}
-                  className="bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs px-4 py-2.5 rounded-xl cursor-pointer"
-                >
-                  Accept NGO Request
-                </button>
-                <button
-                  onClick={() =>
-                    handleStatusChange('available', 'Donor released request back to available listings.', {
-                      assignedNgoId: '',
-                      assignedNgoName: '',
-                      claimLock: '',
-                    })
-                  }
-                  disabled={loadingAction}
-                  className="bg-stone-200 hover:bg-stone-300 text-stone-700 font-bold text-xs px-3.5 py-2.5 rounded-xl cursor-pointer"
-                >
-                  Decline & Re-open
-                </button>
-              </>
-            )}
+                {/* Donor Accept Request */}
+                {donation.status === 'requested' && (isOwner || isAdmin) && (
+                  <>
+                    <button
+                      onClick={() =>
+                        handleStatusChange(
+                          'accepted',
+                          'Donor accepted NGO request. Awaiting pickup dispatch.'
+                        )
+                      }
+                      disabled={loadingAction}
+                      className="bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs px-4 py-2.5 rounded-xl cursor-pointer"
+                    >
+                      Accept NGO Request
+                    </button>
+                    <button
+                      onClick={() =>
+                        handleStatusChange('available', 'Donor released request back to available listings.', {
+                          assignedNgoId: '',
+                          assignedNgoName: '',
+                          claimLock: '',
+                        })
+                      }
+                      disabled={loadingAction}
+                      className="bg-stone-200 hover:bg-stone-300 text-stone-700 font-bold text-xs px-3.5 py-2.5 rounded-xl cursor-pointer"
+                    >
+                      Decline & Re-open
+                    </button>
+                  </>
+                )}
 
-            {/* Volunteer Self-Assign or NGO schedule */}
-            {donation.status === 'accepted' && (isVolunteer || isNgo || isAdmin) && (
-              <button
-                onClick={() =>
-                  handleStatusChange(
-                    'scheduled',
-                    'Volunteer registered pickup schedule.',
-                    {
-                      assignedVolunteerId: currentUser?.uid,
-                      assignedVolunteerName: userProfile?.displayName || 'Volunteer Courier',
+                {/* Volunteer Self-Assign or NGO schedule */}
+                {donation.status === 'accepted' && (isVolunteer || isNgo || isAdmin) && (
+                  <button
+                    onClick={() =>
+                      handleStatusChange(
+                        'scheduled',
+                        'Volunteer registered pickup schedule.',
+                        {
+                          assignedVolunteerId: currentUser?.uid,
+                          assignedVolunteerName: userProfile?.displayName || 'Volunteer Courier',
+                        }
+                      )
                     }
-                  )
-                }
-                disabled={loadingAction}
-                className="bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs px-4 py-2.5 rounded-xl flex items-center gap-2 cursor-pointer"
-              >
-                <Bike className="w-4 h-4" />
-                Assign Me as Courier
-              </button>
-            )}
+                    disabled={loadingAction}
+                    className="bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs px-4 py-2.5 rounded-xl flex items-center gap-2 cursor-pointer"
+                  >
+                    <Bike className="w-4 h-4" />
+                    Assign Me as Courier
+                  </button>
+                )}
 
-            {/* Volunteer Status: Picked Up via Handover Verification */}
-            {donation.status === 'scheduled' && (isAssignedVolunteer || isAdmin || isNgo) && (
-              <button
-                onClick={() => setQrModal({ isOpen: true, mode: 'scan_pickup' })}
-                disabled={loadingAction}
-                className="bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs px-4 py-2.5 rounded-xl flex items-center gap-2 cursor-pointer"
-              >
-                <Package className="w-4 h-4" />
-                Verify Pickup Handover
-              </button>
+                {/* Volunteer Status: Picked Up via Handover Verification */}
+                {donation.status === 'scheduled' && (isAssignedVolunteer || isAdmin || isNgo) && (
+                  <button
+                    onClick={() => setQrModal({ isOpen: true, mode: 'scan_pickup' })}
+                    disabled={loadingAction}
+                    className="bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs px-4 py-2.5 rounded-xl flex items-center gap-2 cursor-pointer"
+                  >
+                    <Package className="w-4 h-4" />
+                    Verify Pickup Handover
+                  </button>
+                )}
+              </>
             )}
 
             {/* Volunteer/NGO Status: Delivered via Handover Verification */}

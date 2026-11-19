@@ -17,6 +17,7 @@ import {
   getExpirationJobStatus,
 } from './expirationJob.js';
 import { handleAcceptVolunteerDonation } from './donationActions.js';
+import { isDonationExpired } from '../src/utils/foodSafety.js';
 
 export const app = express();
 app.set('trust proxy', 1);
@@ -59,9 +60,21 @@ app.use((req: Request, _res: Response, next: NextFunction) => {
   next();
 });
 
+// Warn once if CRON_SECRET is not configured (optional: falls back to admin auth)
+if (process.env.NODE_ENV !== 'test' && !process.env.CRON_SECRET?.trim()) {
+  console.warn(
+    '[Cron Auth] CRON_SECRET is not set; /api/jobs/* endpoints will fall back to authenticated admin access only.'
+  );
+}
+
 // ----------------------------------------------------
 // Rate Limiting (express-rate-limit)
 // ----------------------------------------------------
+const isRateLimitDisabled = (req: Request): boolean =>
+  isTestOrMockRequest(req) ||
+  process.env.NODE_ENV !== 'production' ||
+  Boolean(process.env.AI_STUDIO_PREVIEW);
+
 const createRateLimiter = (options: any) => {
   const limiter = rateLimit({
     ...options,
@@ -69,19 +82,29 @@ const createRateLimiter = (options: any) => {
     keyGenerator: (req: any) => req.ip || req.socket?.remoteAddress || '127.0.0.1',
   });
   return (req: Request, res: Response, next: NextFunction) => {
-    if (isTestOrMockRequest(req)) {
+    if (isRateLimitDisabled(req)) {
       return next();
     }
     return limiter(req, res, next);
   };
 };
 
-// 1. General API rate limiter
+// 1. General API rate limiter (applied only to /api routes; skips health & fcm-status)
 export const generalLimiter = createRateLimiter({
   windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 200,
+  max: 600,
   standardHeaders: true,
   legacyHeaders: false,
+  skip: (req: Request) => {
+    const reqPath = (req.path || '').replace(/\/+$/, '');
+    const origPath = (req.originalUrl || '').split('?')[0].replace(/\/+$/, '');
+    return (
+      reqPath === '/health' ||
+      reqPath === '/notifications/fcm-status' ||
+      origPath === '/api/health' ||
+      origPath === '/api/notifications/fcm-status'
+    );
+  },
   message: { error: 'Too many requests from this IP, please try again after 15 minutes.' },
 });
 
@@ -722,6 +745,10 @@ apiRouter.post('/verify/pickup', requireAuth, verificationLimiter, async (req: R
       }
 
       const donation = donSnap.data();
+      if (donation?.status === 'expired' || isDonationExpired(donation as any).isExpired) {
+        throw new Error('Food Safety Guard: This donation has passed its safe consumption deadline and cannot be picked up.');
+      }
+
       if (!['accepted', 'scheduled'].includes(donation?.status)) {
         throw new Error(`Invalid status transition: donation status is "${donation?.status}". Must be accepted or scheduled to verify pickup.`);
       }
@@ -847,6 +874,10 @@ apiRouter.post('/verify/delivery', requireAuth, verificationLimiter, async (req:
       }
 
       const donation = donSnap.data();
+      if (donation?.status === 'expired') {
+        throw new Error('Food Safety Guard: This donation has expired and cannot be delivered.');
+      }
+
       if (!['picked_up', 'in_transit'].includes(donation?.status)) {
         throw new Error(`Invalid status transition: donation status is "${donation?.status}". Must be picked_up or in_transit to confirm delivery.`);
       }
@@ -963,9 +994,8 @@ apiRouter.post('/verify/delivery', requireAuth, verificationLimiter, async (req:
 apiRouter.post('/donations/accept-volunteer', requireAuth, verificationLimiter, handleAcceptVolunteerDonation);
 apiRouter.post('/donations/accept', requireAuth, verificationLimiter, handleAcceptVolunteerDonation);
 
-// Mount router on /api and root
+// Mount API router strictly under /api so static assets & Vite dev middleware are never rate-limited
 app.use('/api', apiRouter);
-app.use(apiRouter);
 
 // Start scheduled background expiration monitoring in server environments
 if (process.env.NODE_ENV !== 'test' && !process.env.DISABLE_CRON && !process.env.VERCEL) {
