@@ -15,6 +15,7 @@ import {
 import { auth, firebaseProjectInfo } from '../lib/firebase';
 import { UserProfile, UserRole } from '../types';
 import { getUserProfile, createOrUpdateUserProfile } from '../services/dbService';
+import { isUserAdminInFirestore } from '../services/dbUserService';
 
 export type AuthProviderErrorType =
   | 'EMAIL_PASSWORD_DISABLED'
@@ -50,7 +51,6 @@ interface AuthContextType {
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
-const ADMIN_BOOTSTRAP_EMAIL = 'rohangr18@gmail.com';
 const PROFILE_FETCH_TIMEOUT_MS = 4000;
 
 /**
@@ -207,11 +207,32 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [profileLoading, setProfileLoading] = useState<boolean>(false); // Firestore profile sync
   const [error, setError] = useState<string | null>(null);
   const [authProviderError, setAuthProviderError] = useState<AuthProviderErrorType>(null);
+  const [isVerifiedAdmin, setIsVerifiedAdmin] = useState<boolean>(false);
 
   // In-flight sync de-duplication
   const syncInProgressRef = useRef<boolean>(false);
   const currentUserRef = useRef<FirebaseUser | null>(null);
   currentUserRef.current = currentUser;
+
+  /**
+   * Verifies admin status strictly via Firebase Auth custom claims or /admins/{uid} collection
+   */
+  const checkAdminAuthorization = async (user: FirebaseUser): Promise<boolean> => {
+    try {
+      const tokenResult = await withTimeout(user.getIdTokenResult(false), 2000, null);
+      if (tokenResult?.claims?.role === 'admin' || tokenResult?.claims?.admin === true) {
+        return true;
+      }
+    } catch {
+      // Custom claim check failed; fall through to admins collection check
+    }
+
+    try {
+      return await withTimeout(isUserAdminInFirestore(user.uid), 2500, false);
+    } catch {
+      return false;
+    }
+  };
 
   /**
    * Safe profile retrieval and synchronization with non-blocking timeouts
@@ -232,20 +253,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setProfileLoading(true);
 
     try {
-      // 1. Check custom claims and bootstrap email for admin authorization
-      let isVerifiedAdmin = false;
-      const isBootstrapAdmin = user.email?.toLowerCase() === ADMIN_BOOTSTRAP_EMAIL.toLowerCase();
-
-      try {
-        const tokenResult = await withTimeout(user.getIdTokenResult(false), 2000, null);
-        if (tokenResult?.claims?.role === 'admin' || tokenResult?.claims?.admin === true) {
-          isVerifiedAdmin = true;
-        }
-      } catch {
-        // Token claim check failed, fallback to bootstrap check
-      }
-
-      const isAdminUser = isBootstrapAdmin || isVerifiedAdmin;
+      // 1. Verify admin strictly via custom claims or admins/{uid} collection
+      const isAdminUser = await checkAdminAuthorization(user);
+      setIsVerifiedAdmin(isAdminUser);
 
       // 2. Fetch existing profile with timeout
       let profile: UserProfile | null = null;
@@ -261,9 +271,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
       if (!profile) {
         // New profile: only assign a role if desiredRole was passed or admin
-        const roleToAssign = isAdminUser
-          ? 'admin'
-          : desiredRole;
+        const roleToAssign = isAdminUser ? 'admin' : desiredRole;
 
         const newProfile: UserProfile = {
           uid: user.uid,
@@ -319,12 +327,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     } catch (err: any) {
       console.warn('[AuthContext] Profile sync fallback:', err);
       // Construct safe in-memory fallback profile so the user is NEVER blocked
-      const isBootstrapAdmin = user.email?.toLowerCase() === ADMIN_BOOTSTRAP_EMAIL.toLowerCase();
       const fallback: UserProfile = {
         uid: user.uid,
         email: user.email || '',
         displayName: user.displayName || user.email?.split('@')[0] || 'Member',
-        role: isBootstrapAdmin ? 'admin' : (desiredRole || 'donor'),
+        role: desiredRole || 'donor',
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
       };
@@ -376,6 +383,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           await refreshProfile();
         } else {
           setUserProfile(null);
+          setIsVerifiedAdmin(false);
           setLoading(false);
         }
       },
@@ -444,10 +452,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
 
     // Role escalation security: Users CANNOT assign themselves the admin role during registration
-    const isBootstrapAdmin = cleanEmail.toLowerCase() === ADMIN_BOOTSTRAP_EMAIL.toLowerCase();
-    const safeRole: UserRole = isBootstrapAdmin
-      ? 'admin'
-      : (role === 'ngo' || role === 'volunteer' ? role : 'donor');
+    const safeRole: UserRole = role === 'ngo' || role === 'volunteer' ? role : 'donor';
 
     try {
       const cred = await createUserWithEmailAndPassword(auth, cleanEmail, pass);
@@ -492,10 +497,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       const user = res.user;
       setCurrentUser(user);
 
-      // Check admin status
-      const isBootstrapAdmin = user.email?.toLowerCase() === ADMIN_BOOTSTRAP_EMAIL.toLowerCase();
+      // Check verified admin status via custom claims or admins/{uid} collection
+      const isAdminUser = await checkAdminAuthorization(user);
+      setIsVerifiedAdmin(isAdminUser);
 
-      // Retrieve existing profile with 3.5s timeout protection
+      // Retrieve existing profile with timeout protection
       const existing = await withTimeout(
         getUserProfile(user.uid),
         PROFILE_FETCH_TIMEOUT_MS,
@@ -507,7 +513,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       if (existing && existing.role) {
         // Returning user with already saved role: PRESERVE SAVED ROLE!
         finalProfile = existing;
-        if (isBootstrapAdmin && existing.role !== 'admin') {
+        if (isAdminUser && existing.role !== 'admin') {
           try {
             finalProfile = await withTimeout(
               createOrUpdateUserProfile({ ...existing, role: 'admin' }),
@@ -520,7 +526,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         }
       } else {
         // New user OR existing user without a role:
-        const roleToAssign: UserRole = isBootstrapAdmin
+        const roleToAssign: UserRole = isAdminUser
           ? 'admin'
           : (selectedRole === 'volunteer' || selectedRole === 'ngo' ? selectedRole : (selectedRole || 'donor'));
 
@@ -575,6 +581,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       await signOut(auth);
       setUserProfile(null);
       setCurrentUser(null);
+      setIsVerifiedAdmin(false);
       setError(null);
       setAuthProviderError(null);
     } catch (err: any) {
@@ -602,18 +609,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const updateRole = async (newRole: UserRole) => {
     if (!currentUser) return;
-    const isBootstrap = currentUser.email?.toLowerCase() === ADMIN_BOOTSTRAP_EMAIL.toLowerCase();
 
-    // Security: non-bootstrap users cannot escalate their role to admin
-    if (newRole === 'admin' && !isBootstrap) {
-      setError('Administrator privileges cannot be self-assigned. Contact an existing admin.');
-      return;
-    }
-
-    // Don't downgrade bootstrap admin
-    if (isBootstrap && newRole !== 'admin') {
-      setError('Bootstrap administrator role cannot be altered.');
-      return;
+    // Security: non-admin users cannot self-assign admin privileges
+    if (newRole === 'admin' && !isVerifiedAdmin) {
+      const msg = 'Administrator privileges cannot be self-assigned. Contact an existing admin.';
+      setError(msg);
+      throw new Error(msg);
     }
 
     const currentData = userProfile || {
@@ -624,19 +625,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       updatedAt: new Date().toISOString(),
     };
 
-    try {
-      const updated = await withTimeout(
-        createOrUpdateUserProfile({
-          ...currentData,
-          role: newRole,
-        }),
-        PROFILE_FETCH_TIMEOUT_MS,
-        { ...currentData, role: newRole }
-      );
-      setUserProfile(updated);
-    } catch {
-      setUserProfile({ ...currentData, role: newRole });
-    }
+    const updated = await createOrUpdateUserProfile({
+      ...currentData,
+      role: newRole,
+    });
+    setUserProfile(updated);
   };
 
   const clearError = () => {
@@ -644,8 +637,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setAuthProviderError(null);
   };
 
-  const isBootstrap = currentUser?.email?.toLowerCase() === ADMIN_BOOTSTRAP_EMAIL.toLowerCase();
-  const isAdmin = isBootstrap || userProfile?.role === 'admin';
+  const isAdmin = isVerifiedAdmin;
   const isNgo = userProfile?.role === 'ngo';
   const isDonor = userProfile?.role === 'donor';
   const isVolunteer = userProfile?.role === 'volunteer';

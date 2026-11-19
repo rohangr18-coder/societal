@@ -92,9 +92,12 @@ export function getAdminApp(): App {
 
     if (!warnedMissingServiceAccount && process.env.NODE_ENV !== 'test') {
       warnedMissingServiceAccount = true;
-      console.warn(
-        '[firebaseAdmin] FIREBASE_SERVICE_ACCOUNT_JSON is not set; falling back to Application Default Credentials / projectId.'
-      );
+      const hasAdcEnv = Boolean(process.env.GOOGLE_APPLICATION_CREDENTIALS?.trim());
+      if (!hasAdcEnv) {
+        console.warn(
+          '[firebaseAdmin] Neither FIREBASE_SERVICE_ACCOUNT_JSON nor GOOGLE_APPLICATION_CREDENTIALS is configured; falling back to Application Default Credentials / projectId.'
+        );
+      }
     }
 
     try {

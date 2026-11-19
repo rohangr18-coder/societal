@@ -457,12 +457,19 @@ export async function acceptDonationByVolunteer(
       if (resp.status === 400 && data.message?.includes('safe consumption threshold')) {
         return { success: false, code: 'EXPIRED', message: data.message };
       }
+      if (resp.status === 404) {
+        return { success: false, code: 'NOT_FOUND', message: data.message || 'Donation listing not found.' };
+      }
       if (resp.status >= 400 && resp.status < 500) {
         return { success: false, code: 'ERROR', message: data.message || data.error || 'Failed to accept collection.' };
       }
+      // 503 (e.g. ADMIN_UNAVAILABLE) and other 5xx statuses fall through to the client Firestore transaction fallback
+      if (resp.status === 503 || resp.status >= 500) {
+        console.warn('[acceptDonationByVolunteer] Server unavailable, falling back to client transaction:', resp.status, data.code || data.message);
+      }
     }
   } catch (netErr) {
-    console.warn('[acceptDonationByVolunteer] Server endpoint notice, falling back to client transaction:', netErr);
+    console.warn('[acceptDonationByVolunteer] Server endpoint unreachable, falling back to client transaction:', netErr);
   }
 
   // 2. Direct Firestore atomic transaction fallback
@@ -519,7 +526,16 @@ export async function acceptDonationByVolunteer(
         timeline: updatedTimeline,
       });
       const volRef = doc(db, 'volunteerProfiles', volunteerUid);
-      tx.set(volRef, { activeAssignmentId: donationId, updatedAt: now }, { merge: true });
+      tx.set(
+        volRef,
+        {
+          userId: volunteerUid,
+          fullName: volunteerName,
+          activeAssignmentId: donationId,
+          updatedAt: now,
+        },
+        { merge: true }
+      );
       return {
         success: true,
         code: 'SUCCESS' as const,
@@ -535,19 +551,7 @@ export async function acceptDonationByVolunteer(
       };
     });
 
-    if (result.success && result.donation?.donorId) {
-      sendNotification({
-        id: `notif_donor_accepted_${result.donation.id}`,
-        userId: result.donation.donorId,
-        recipientUserId: result.donation.donorId,
-        title: 'Volunteer Accepted Collection',
-        message: `${volunteerName} has accepted your donation "${result.donation.foodName}" and is scheduled for pickup.`,
-        type: 'assignment',
-        link: '/dashboard',
-        donationId: result.donation.id,
-        deliveryStatus: 'delivered',
-      }).catch(console.warn);
-    }
+    // Note: in-app notifications creation is server-only per firestore.rules (created atomically by /api/donations/accept-volunteer).
     return result;
   } catch (error) {
     handleFirestoreError(error, OperationType.WRITE, path);
@@ -616,6 +620,8 @@ export async function cancelVolunteerCollection(
       tx.set(
         volRef,
         {
+          userId: volunteerUid,
+          fullName: volunteerName,
           activeAssignmentId: '',
           updatedAt: now,
         },

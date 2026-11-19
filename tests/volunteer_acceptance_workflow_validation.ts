@@ -19,6 +19,7 @@ import {
   testDonationsStore,
   testVolunteerProfilesStore,
   testAuditLogsStore,
+  testNotificationsStore,
 } from '../server/donationActions.js';
 import { Donation } from '../src/types';
 
@@ -102,6 +103,7 @@ export async function runVolunteerAcceptanceValidation(): Promise<void> {
   testDonationsStore.clear();
   testVolunteerProfilesStore.clear();
   testAuditLogsStore.length = 0;
+  testNotificationsStore.length = 0;
 
   // Test Fixture Setup
   const testDonationId1 = `test_vol_accept_${Date.now()}_1`;
@@ -211,10 +213,13 @@ export async function runVolunteerAcceptanceValidation(): Promise<void> {
   assert(Array.isArray(savedData1.timeline) && savedData1.timeline.length >= 2, 'Timeline updated with acceptance entry');
   markPass('Atomic transaction persisted assignment without overwriting donation details');
 
-  // Verify volunteer profile activeAssignmentId was updated
+  // Verify volunteer profile activeAssignmentId, userId, and fullName were updated
   const volSnapA = testVolunteerProfilesStore.get(volunteerUidA);
   assert(volSnapA?.activeAssignmentId === testDonationId1, 'Volunteer profile activeAssignmentId updated');
-  markPass('Volunteer active assignment link updated in volunteer profile');
+  assert(volSnapA?.userId === volunteerUidA && volSnapA?.fullName === 'Courier Alice', 'Volunteer profile includes required userId and fullName fields');
+  const donorNotif = testNotificationsStore.find((n) => n.donationId === testDonationId1 && n.userId === donorUid);
+  assert(Boolean(donorNotif && donorNotif.title === 'Volunteer Accepted Collection'), 'Donor notification created server-side on volunteer acceptance');
+  markPass('Volunteer active assignment and server-side donor notification verified');
 
   // ============================================================
   // Test Case 2 & 3: Race condition / Duplicate acceptance prevention
@@ -366,15 +371,20 @@ export async function runVolunteerAcceptanceValidation(): Promise<void> {
   const rulesContent = fs.readFileSync(path.resolve(process.cwd(), 'firestore.rules'), 'utf-8');
   assert(rulesContent.includes("existing().status in ['available', 'requested', 'accepted', 'scheduled', 'picked_up']"), 'Security rules permit volunteer transition from available / requested');
   assert(rulesContent.includes("incoming().status in ['available', 'requested', 'accepted', 'scheduled', 'in_transit', 'cancelled']"), 'Security rules permit accepted and cancelled volunteer states');
-  assert(rulesContent.includes("volunteerProfiles/$(request.auth.uid)"), 'Security rules recognize registered volunteer profile');
+  assert(rulesContent.includes("hasRole('volunteer') || hasRole('donor') || exists(/databases/$(database)/documents/volunteerProfiles/$(request.auth.uid))"), 'Security rules allow volunteer/donor acceptance without role-promotion race');
   markPass('firestore.rules updated with secure volunteer acceptance and state permissions');
 
   const dbServiceContent = fs.readFileSync(path.resolve(process.cwd(), 'src/services/dbService.ts'), 'utf-8');
   assert(dbServiceContent.includes('acceptDonationByVolunteer'), 'dbService exports acceptDonationByVolunteer');
   assert(dbServiceContent.includes('/api/donations/accept-volunteer'), 'dbService calls backend atomic endpoint');
+  assert(dbServiceContent.includes('userId: volunteerUid') && dbServiceContent.includes('fullName: volunteerName'), 'dbService fallback writes required volunteerProfiles fields');
   assert(dbServiceContent.includes('Food Safety Alert: This food collection request has passed its safe consumption threshold'), 'dbService enforces food safety check');
   assert(!dbServiceContent.includes("collection(db, 'auditLogs')"), 'dbService does not attempt forbidden client-side write to auditLogs');
   markPass('dbService implements server-first transaction with resilient client fallback and no illegal auditLogs write');
+
+  const authCtxContent = fs.readFileSync(path.resolve(process.cwd(), 'src/context/AuthContext.tsx'), 'utf-8');
+  assert(!authCtxContent.includes('ADMIN_BOOTSTRAP_EMAIL') && !authCtxContent.includes('rohangr18@gmail.com'), 'AuthContext has no hardcoded admin bootstrap email');
+  markPass('AuthContext admin check relies strictly on admins/{uid} collection or custom claims');
 
   const volunteerViewContent = fs.readFileSync(path.resolve(process.cwd(), 'src/components/VolunteerView.tsx'), 'utf-8');
   assert(volunteerViewContent.includes('acceptDonationByVolunteer'), 'VolunteerView calls acceptDonationByVolunteer');

@@ -1,40 +1,19 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import {
   Bike,
-  Car,
-  Truck,
-  MapPin,
-  Clock,
   Compass,
   CheckCircle2,
   AlertCircle,
   Radio,
-  Navigation,
-  ShieldCheck,
-  ChevronRight,
-  Phone,
-  Building2,
-  Calendar,
-  Sparkles,
-  ArrowRight,
-  RotateCcw,
   Sliders,
   Bell,
   BellRing,
-  Send,
-  Copy,
-  Check,
-  UserCheck,
   Loader2,
-  Award,
   PackageCheck,
-  AlertTriangle,
-  ExternalLink,
   LayoutGrid,
   Map as MapIcon,
   Layers,
   Camera,
-  QrCode,
 } from 'lucide-react';
 import { Donation, VolunteerProfile, DonationStatus } from '../types';
 import { useAuth } from '../context/AuthContext';
@@ -352,6 +331,20 @@ export const VolunteerView: React.FC<VolunteerViewProps> = ({
     }
   };
 
+  // Extract a concise, safe technical detail without exposing serialized user/auth JSON
+  const extractSafeErrorDetail = (err: any): string => {
+    let raw = err?.message || String(err || 'Unexpected error');
+    try {
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed.error === 'string') {
+        raw = parsed.error;
+      }
+    } catch {
+      // Not JSON
+    }
+    return raw.length > 140 ? `${raw.slice(0, 140)}…` : raw;
+  };
+
   // Atomic accept request
   const handleAcceptRequest = async (donation: Donation) => {
     if (!currentUser) {
@@ -370,20 +363,16 @@ export const VolunteerView: React.FC<VolunteerViewProps> = ({
     setClaimingDonationId(donation.id);
     setActionMessage(null);
 
-    // If authenticated user is not yet designated as volunteer, promote role
-    if (userProfile && userProfile.role !== 'volunteer') {
-      try {
-        await updateRole('volunteer');
-      } catch (roleErr) {
-        console.warn('Volunteer role notice:', roleErr);
-      }
-    }
-
-    const volunteerName =
-      userProfile?.displayName || currentUser.email?.split('@')[0] || 'Volunteer Courier';
-    const volunteerPhone = userProfile?.phone || profile?.phone || '+91 98765 43210';
-
     try {
+      // Ensure user profile is saved with role:'volunteer' in Firestore before accepting
+      if (userProfile?.role !== 'volunteer' && userProfile?.role !== 'admin') {
+        await updateRole('volunteer');
+      }
+
+      const volunteerName =
+        userProfile?.displayName || currentUser.email?.split('@')[0] || 'Volunteer Courier';
+      const volunteerPhone = userProfile?.phone || profile?.phone || '+91 98765 43210';
+
       const res = await acceptDonationByVolunteer(
         donation.id,
         currentUser.uid,
@@ -407,9 +396,10 @@ export const VolunteerView: React.FC<VolunteerViewProps> = ({
         });
       }
     } catch (err: any) {
+      const detail = extractSafeErrorDetail(err);
       setActionMessage({
         type: 'error',
-        text: `Error accepting collection: ${err.message}`,
+        text: `Could not accept this collection, please try again. (${detail})`,
       });
     } finally {
       setClaimingDonationId(null);

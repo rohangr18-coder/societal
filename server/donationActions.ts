@@ -6,6 +6,7 @@ import { isDonationExpired } from '../src/utils/foodSafety.js';
 export const testDonationsStore = new Map<string, any>();
 export const testVolunteerProfilesStore = new Map<string, any>();
 export const testAuditLogsStore: any[] = [];
+export const testNotificationsStore: any[] = [];
 
 export async function handleAcceptVolunteerDonation(req: Request, res: Response): Promise<void> {
   const sendJson = (status: number, data: any) => {
@@ -92,10 +93,28 @@ export async function handleAcceptVolunteerDonation(req: Request, res: Response)
 
       testDonationsStore.set(donationId, updated);
       testVolunteerProfilesStore.set(volunteerUid, {
+        ...(testVolunteerProfilesStore.get(volunteerUid) || {}),
         userId: volunteerUid,
+        fullName: actorName,
         activeAssignmentId: donationId,
         updatedAt: now,
       });
+
+      if (donation.donorId) {
+        testNotificationsStore.push({
+          id: `notif_${Date.now()}`,
+          userId: donation.donorId,
+          recipientUserId: donation.donorId,
+          title: 'Volunteer Accepted Collection',
+          message: `${actorName} has accepted your donation "${donation.foodName || 'Food Donation'}" and is scheduled for pickup.`,
+          type: 'assignment',
+          link: '/dashboard',
+          donationId,
+          deliveryStatus: 'delivered',
+          read: false,
+          createdAt: now,
+        });
+      }
 
       testAuditLogsStore.push({
         id: `audit_${Date.now()}`,
@@ -184,16 +203,36 @@ export async function handleAcceptVolunteerDonation(req: Request, res: Response)
 
       tx.update(donRef, updateData);
 
-      // Update volunteer profile's active assignment
+      // Update volunteer profile's active assignment (include required userId & fullName for create/merge)
       const volRef = firestore.collection('volunteerProfiles').doc(volunteerUid);
       tx.set(
         volRef,
         {
+          userId: volunteerUid,
+          fullName: actorName,
           activeAssignmentId: donationId,
           updatedAt: now,
         },
         { merge: true }
       );
+
+      // Create donor in-app notification atomically inside the same transaction
+      if (donation.donorId) {
+        const donorNotifRef = firestore.collection('notifications').doc();
+        tx.set(donorNotifRef, {
+          id: donorNotifRef.id,
+          userId: donation.donorId,
+          recipientUserId: donation.donorId,
+          title: 'Volunteer Accepted Collection',
+          message: `${actorName} has accepted your donation "${donation.foodName || 'Food Donation'}" and is scheduled for pickup.`,
+          type: 'assignment',
+          link: '/dashboard',
+          donationId,
+          deliveryStatus: 'delivered',
+          read: false,
+          createdAt: now,
+        });
+      }
 
       // Audit log: Server-side atomic record creation
       const auditRef = firestore.collection('auditLogs').doc();
@@ -213,24 +252,7 @@ export async function handleAcceptVolunteerDonation(req: Request, res: Response)
       };
     });
 
-    // Post-transaction in-app notifications
-    if (result && result.donorId) {
-      const notifRef = firestore.collection('notifications').doc();
-      notifRef.set({
-        id: notifRef.id,
-        userId: result.donorId,
-        recipientUserId: result.donorId,
-        title: 'Volunteer Accepted Collection',
-        message: `${actorName} has accepted your donation "${result.foodName || 'Food Donation'}" and is scheduled for pickup.`,
-        type: 'assignment',
-        link: '/dashboard',
-        donationId,
-        deliveryStatus: 'delivered',
-        read: false,
-        createdAt: new Date().toISOString(),
-      }).catch((e) => console.warn('[accept-volunteer] Donor in-app notification notice:', e));
-    }
-
+    // Post-transaction NGO notification (if an NGO had already claimed this donation)
     if (result && result.assignedNgoId) {
       const notifRef = firestore.collection('notifications').doc();
       notifRef.set({
@@ -254,17 +276,18 @@ export async function handleAcceptVolunteerDonation(req: Request, res: Response)
       donation: result,
     });
   } catch (err: any) {
-    const isConflict =
-      err.statusCode === 409 ||
-      err.message?.includes('already accepted') ||
-      err.message?.includes('already claimed') ||
-      err.message?.includes('no longer available') ||
-      err.message?.includes('Another volunteer');
+    if (err?.statusCode && err.statusCode >= 400 && err.statusCode < 500) {
+      return sendJson(err.statusCode, {
+        success: false,
+        message: err.message || 'Error processing collection acceptance.',
+      });
+    }
 
-    const statusCode = err.statusCode || (isConflict ? 409 : 400);
-    return sendJson(statusCode, {
+    console.error('[accept-volunteer] Server transaction failed:', err);
+    return sendJson(503, {
       success: false,
-      message: err.message || 'Error processing collection acceptance.',
+      code: 'ADMIN_UNAVAILABLE',
+      message: 'Server could not complete the request, falling back',
     });
   }
 }

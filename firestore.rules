@@ -171,7 +171,7 @@ service cloud.firestore {
          incoming().status in ['requested', 'accepted'] &&
          isValidStatusTransition(existing().status, incoming().status)) ||
         // 3. Volunteer: accepts task, advances delivery progress, or releases assignment before pickup
-        ((hasRole('volunteer') || exists(/databases/$(database)/documents/volunteerProfiles/$(request.auth.uid))) &&
+        ((hasRole('volunteer') || hasRole('donor') || exists(/databases/$(database)/documents/volunteerProfiles/$(request.auth.uid))) &&
          incoming().diff(existing()).affectedKeys().hasOnly([
           'status', 'assignedVolunteerId', 'assignedVolunteerName', 'assignedVolunteerPhone',
           'acceptedAt', 'pickedUpAt', 'deliveredAt', 'completedAt', 'claimLock',

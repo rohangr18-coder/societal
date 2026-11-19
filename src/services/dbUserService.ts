@@ -25,6 +25,16 @@ export async function getUserProfile(uid: string): Promise<UserProfile | null> {
   }
 }
 
+export async function isUserAdminInFirestore(uid: string): Promise<boolean> {
+  if (!uid) return false;
+  try {
+    const adminSnap = await getDoc(doc(db, 'admins', uid));
+    return adminSnap.exists();
+  } catch {
+    return false;
+  }
+}
+
 export async function createOrUpdateUserProfile(
   profile: Partial<UserProfile> & { uid: string; email: string }
 ): Promise<UserProfile> {
@@ -48,12 +58,13 @@ export async function createOrUpdateUserProfile(
       // Offline fallback
     }
 
-    let role: UserRole | undefined = existing?.role || profile.role;
+    // Respect explicit role changes (e.g., donor -> volunteer) while preserving existing role on partial updates
+    let role: UserRole | undefined = profile.role ?? existing?.role;
     if (isVerifiedAdmin) {
       role = 'admin';
     } else if (role === 'admin' && !isVerifiedAdmin) {
       // Security: non-admin cannot self-escalate to admin without trusted admin record
-      role = existing?.role || 'donor';
+      role = existing?.role && existing.role !== 'admin' ? existing.role : 'donor';
     }
 
     const userDoc: UserProfile = {
